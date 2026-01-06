@@ -6,16 +6,12 @@ set -e
 # [新增] 自定义订阅路径密钥 (密码)
 CUSTOM_SUB_SECRET="hello"
 
-# [新增] 手动填写第二个端口 (如果面板不自动传递，请在此处填写)
-# 例如: MANUAL_SECOND_PORT="10086"
+# [配置] 手动填写第二个端口 (例如: "10086")
 # 留空则仅使用自动获取的端口
 MANUAL_SECOND_PORT="25109"
 
 # 固定隧道填写token，不填默认为临时隧道
 ARGO_TOKEN=""
-
-# 单端口模式 UDP 协议选择: hy2 (默认) 或 tuic
-SINGLE_PORT_UDP="tuic"
 
 # ================== CF 优选域名列表 ==================
 CF_DOMAINS=(
@@ -78,21 +74,25 @@ echo "[端口] 最终使用 $PORT_COUNT 个: ${AVAILABLE_PORTS[*]}"
 
 # ================== 端口分配逻辑 ==================
 if [ $PORT_COUNT -eq 1 ]; then
-    UDP_PORT=${AVAILABLE_PORTS[0]}
-    TUIC_PORT=""
-    HY2_PORT=""
-    [[ "$SINGLE_PORT_UDP" == "tuic" ]] && TUIC_PORT=$UDP_PORT || HY2_PORT=$UDP_PORT
-    REALITY_PORT=""
-    HTTP_PORT=${AVAILABLE_PORTS[0]}
-    SINGLE_PORT_MODE=true
-else
-    # 端口1 (自动获取的): 给 TUIC + Reality
+    # === 单端口模式 ===
+    # 端口1: TUIC (UDP) + HTTP (TCP)
     TUIC_PORT=${AVAILABLE_PORTS[0]}
-    REALITY_PORT=${AVAILABLE_PORTS[0]}
+    HTTP_PORT=${AVAILABLE_PORTS[0]}
     
-    # 端口2 (手动填写的): 给 Hysteria2 + HTTP订阅
-    HY2_PORT=${AVAILABLE_PORTS[1]}
-    HTTP_PORT=${AVAILABLE_PORTS[1]}
+    # SS 需要同时占用 TCP/UDP，但 TCP 已被 HTTP 占用，所以无法启动 SS
+    SS_PORT=""
+    
+    SINGLE_PORT_MODE=true
+    echo "[警告] 仅检测到 1 个端口。端口已分配给 TUIC(UDP) 和 HTTP(TCP)。"
+    echo "[注意] 由于端口冲突，Shadowsocks 将不会启动！请配置第二个端口以启用 SS。"
+else
+    # === 双端口模式 (推荐) ===
+    # 端口1: TUIC (UDP) + HTTP (TCP)
+    TUIC_PORT=${AVAILABLE_PORTS[0]}
+    HTTP_PORT=${AVAILABLE_PORTS[0]}
+    
+    # 端口2: Shadowsocks (TCP + UDP)
+    SS_PORT=${AVAILABLE_PORTS[1]}
     
     SINGLE_PORT_MODE=false
 fi
@@ -132,29 +132,11 @@ download_file() {
 download_file "${BASE_URL}/sb" "$SB_FILE"
 download_file "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARGO_ARCH}" "$ARGO_FILE"
 
-# ================== Reality 密钥 ==================
-if [ "$SINGLE_PORT_MODE" = false ]; then
-    echo "[密钥] 检查中..."
-    KEY_FILE="${FILE_PATH}/key.txt"
-    if [ -f "$KEY_FILE" ]; then
-        private_key=$(grep "PrivateKey:" "$KEY_FILE" | awk '{print $2}')
-        public_key=$(grep "PublicKey:" "$KEY_FILE" | awk '{print $2}')
-    else
-        output=$("$SB_FILE" generate reality-keypair)
-        echo "$output" > "$KEY_FILE"
-        private_key=$(echo "$output" | awk '/PrivateKey:/ {print $2}')
-        public_key=$(echo "$output" | awk '/PublicKey:/ {print $2}')
-    fi
-    echo "[密钥] 已就绪"
-fi
-
-# ================== 证书生成 ==================
+# ================== 证书生成 (TUIC需要) ==================
 echo "[证书] 生成中..."
-# 优先使用 OpenSSL 生成标准证书
 if command -v openssl >/dev/null 2>&1; then
     openssl req -x509 -newkey rsa:2048 -nodes -sha256 -keyout "${FILE_PATH}/private.key" -out "${FILE_PATH}/cert.pem" -days 3650 -subj "/CN=www.bing.com" >/dev/null 2>&1
 else
-    # 备用
     printf -- "-----BEGIN EC PRIVATE KEY-----\nMHcCAQEEIM4792SEtPqIt1ywqTd/0bYidBqpYV/+siNnfBYsdUYsoAoGCCqGSM49\nAwEHoUQDQgAE1kHafPj07rJG+HboH2ekAI4r+e6TL38GWASAnngZreoQDF16ARa/\nTsyLyFoPkhTxSbehH/OBEjHtSZGaDhMqQ==\n-----END EC PRIVATE KEY-----\n" > "${FILE_PATH}/private.key"
 
     printf -- "-----BEGIN CERTIFICATE-----\nMIIBejCCASGgAwIBAgIUFWeQL3556PNJLp/veCFxGNj9crkwCgYIKoZIzj0EAwIw\nEzERMA8GA1UEAwwIYmluZy5jb20wHhcNMjUwMTAxMDEwMTAwWhcNMzUwMTAxMDEw\nMTAwWjATMREwDwYDVQQDDAhiaW5nLmNvbTBZMBMGByqGSM49AgEGCCqGSM49AwEH\nA0IABNZB2nz49O6yRvh26B9npACOK/nuky9/BlgEgJ54Ga3qEAxdegEWv07Mi8ha\nD5IU8Um3oR/zgRIx7UmRmg4TKkOjUzBRMB0GA1UdDgQWBBTV1cFID7UISE7PLTBR\nBfGbgrkMNzAfBgNVHSMEGDAWgBTV1cFID7UISE7PLTBRBfGbgrkMNzAPBgNVHRMB\nAf8EBTADAQH/MAoGCCqGSM49BAMCA0cAMEQCIARDAJvg0vd/ytrQVvEcSm6XTlB+\neQ6OFb9LbLYL9Zi+AiB+foMbi4y/0YUQlTtz7as9S8/lciBF5VCUoVIKS+vX2g==\n-----END CERTIFICATE-----\n" > "${FILE_PATH}/cert.pem"
@@ -180,13 +162,16 @@ generate_sub() {
     > "${FILE_PATH}/list.txt"
     
     # TUIC (UDP)
-    [ -n "$TUIC_PORT" ] && echo "tuic://${UUID}:admin@${PUBLIC_IP}:${TUIC_PORT}?sni=www.bing.com&alpn=h3&congestion_control=bbr&allowInsecure=1#TUIC-${ISP}" >> "${FILE_PATH}/list.txt"
-    
-    # HY2 (UDP)
-    [ -n "$HY2_PORT" ] && echo "hysteria2://${UUID}@${PUBLIC_IP}:${HY2_PORT}/?sni=www.bing.com&insecure=1#Hysteria2-${ISP}" >> "${FILE_PATH}/list.txt"
-    
-    # Reality (TCP)
-    [ -n "$REALITY_PORT" ] && echo "vless://${UUID}@${PUBLIC_IP}:${REALITY_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.nazhumi.com&fp=chrome&pbk=${public_key}&type=tcp#Reality-${ISP}" >> "${FILE_PATH}/list.txt"
+    if [ -n "$TUIC_PORT" ]; then
+        echo "tuic://${UUID}:admin@${PUBLIC_IP}:${TUIC_PORT}?sni=www.bing.com&alpn=h3&congestion_control=bbr&allowInsecure=1#TUIC-${ISP}" >> "${FILE_PATH}/list.txt"
+    fi
+
+    # Shadowsocks (TCP + UDP)
+    if [ -n "$SS_PORT" ]; then
+        # 生成 ss://base64(method:password)@ip:port
+        SS_BASE64=$(echo -n "aes-256-gcm:${UUID}" | base64 -w 0 2>/dev/null || echo -n "aes-256-gcm:${UUID}" | openssl base64 | tr -d '\n')
+        echo "ss://${SS_BASE64}@${PUBLIC_IP}:${SS_PORT}#SS-${ISP}" >> "${FILE_PATH}/list.txt"
+    fi
     
     # Argo VLESS
     [ -n "$argo_domain" ] && echo "vless://${UUID}@${BEST_CF_DOMAIN}:443?encryption=none&security=tls&sni=${argo_domain}&type=ws&host=${argo_domain}&path=%2F${UUID}-vless#Argo-${ISP}" >> "${FILE_PATH}/list.txt"
@@ -195,6 +180,7 @@ generate_sub() {
 }
 
 # ================== HTTP 服务器脚本 ==================
+# 这里的端口使用 Port 1 (HTTP_PORT)
 cat > "${FILE_PATH}/server.js" <<JSEOF
 const http = require('http');
 const fs = require('fs');
@@ -211,7 +197,6 @@ http.createServer((req, res) => {
 }).listen(port, bind, () => console.log('HTTP on ' + bind + ':' + port));
 JSEOF
 
-# ================== 启动 HTTP 订阅服务 ==================
 echo "[HTTP] 启动订阅服务 (端口 $HTTP_PORT)..."
 node "${FILE_PATH}/server.js" $HTTP_PORT 0.0.0.0 &
 HTTP_PID=$!
@@ -223,7 +208,7 @@ echo "[CONFIG] 生成配置..."
 
 INBOUNDS=""
 
-# TUIC (UDP)
+# TUIC (UDP) - Port 1
 if [ -n "$TUIC_PORT" ]; then
     INBOUNDS="{
         \"type\": \"tuic\",
@@ -241,47 +226,22 @@ if [ -n "$TUIC_PORT" ]; then
     }"
 fi
 
-# HY2 (UDP)
-if [ -n "$HY2_PORT" ]; then
+# Shadowsocks (TCP + UDP) - Port 2
+if [ -n "$SS_PORT" ]; then
     [ -n "$INBOUNDS" ] && INBOUNDS="${INBOUNDS},"
     INBOUNDS="${INBOUNDS}{
-        \"type\": \"hysteria2\",
-        \"tag\": \"hy2-in\",
+        \"type\": \"shadowsocks\",
+        \"tag\": \"ss-in\",
         \"listen\": \"::\",
-        \"listen_port\": ${HY2_PORT},
-        \"users\": [{\"password\": \"${UUID}\"}],
-        \"tls\": {
-            \"enabled\": true,
-            \"alpn\": [\"h3\"],
-            \"certificate_path\": \"${FILE_PATH}/cert.pem\",
-            \"key_path\": \"${FILE_PATH}/private.key\"
-        }
-    }"
-fi
-
-# VLESS Reality (TCP)
-if [ -n "$REALITY_PORT" ]; then
-    INBOUNDS="${INBOUNDS},{
-        \"type\": \"vless\",
-        \"tag\": \"vless-reality-in\",
-        \"listen\": \"::\",
-        \"listen_port\": ${REALITY_PORT},
-        \"users\": [{\"uuid\": \"${UUID}\", \"flow\": \"xtls-rprx-vision\"}],
-        \"tls\": {
-            \"enabled\": true,
-            \"server_name\": \"www.nazhumi.com\",
-            \"reality\": {
-                \"enabled\": true,
-                \"handshake\": {\"server\": \"www.nazhumi.com\", \"server_port\": 443},
-                \"private_key\": \"${private_key}\",
-                \"short_id\": [\"\"]
-            }
-        }
+        \"listen_port\": ${SS_PORT},
+        \"method\": \"aes-256-gcm\",
+        \"password\": \"${UUID}\"
     }"
 fi
 
 # VLESS for Argo
-INBOUNDS="${INBOUNDS},{
+[ -n "$INBOUNDS" ] && INBOUNDS="${INBOUNDS},"
+INBOUNDS="${INBOUNDS}{
     \"type\": \"vless\",
     \"tag\": \"vless-argo-in\",
     \"listen\": \"127.0.0.1\",
@@ -310,7 +270,6 @@ sleep 2
 
 if ! kill -0 $SB_PID 2>/dev/null; then
     echo "[SING-BOX] 启动失败"
-    head -n 2 "${FILE_PATH}/private.key"
     "$SB_FILE" run -c "${FILE_PATH}/config.json"
     exit 1
 fi
@@ -341,20 +300,19 @@ SUB_URL="http://${PUBLIC_IP}:${HTTP_PORT}/${SUB_PATH}"
 echo ""
 echo "==================================================="
 if [ "$SINGLE_PORT_MODE" = true ]; then
-    echo "模式: 单端口 (${SINGLE_PORT_UDP^^} + Argo)"
+    echo "模式: 单端口 (TUIC + Argo)"
+    echo "警告: 未配置第二个端口，SS (Shadowsocks) 已禁用。"
     echo ""
     echo "代理节点:"
-    [ -n "$HY2_PORT" ] && echo "  - HY2 (UDP): ${PUBLIC_IP}:${HY2_PORT}"
-    [ -n "$TUIC_PORT" ] && echo "  - TUIC (UDP): ${PUBLIC_IP}:${TUIC_PORT}"
-    [ -n "$ARGO_DOMAIN" ] && echo "  - Argo (WS): ${ARGO_DOMAIN}"
+    echo "  - TUIC (UDP):   ${PUBLIC_IP}:${TUIC_PORT}"
+    [ -n "$ARGO_DOMAIN" ] && echo "  - Argo (WS):    ${ARGO_DOMAIN}"
 else
-    echo "模式: 多端口 (TUIC + HY2 + Reality + Argo)"
+    echo "模式: 双端口 (TUIC + SS + Argo)"
     echo ""
     echo "代理节点:"
-    echo "  - TUIC (UDP): ${PUBLIC_IP}:${TUIC_PORT}"
-    echo "  - HY2 (UDP): ${PUBLIC_IP}:${HY2_PORT}"
-    echo "  - Reality (TCP): ${PUBLIC_IP}:${REALITY_PORT}"
-    [ -n "$ARGO_DOMAIN" ] && echo "  - Argo (WS): ${ARGO_DOMAIN}"
+    echo "  - TUIC (UDP):   ${PUBLIC_IP}:${TUIC_PORT}"
+    echo "  - SS (TCP+UDP): ${PUBLIC_IP}:${SS_PORT}"
+    [ -n "$ARGO_DOMAIN" ] && echo "  - Argo (WS):    ${ARGO_DOMAIN}"
 fi
 echo ""
 echo "订阅链接: $SUB_URL"
