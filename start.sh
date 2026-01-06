@@ -3,12 +3,17 @@ set -e
 
 # ================== 配置区域 ==================
 
-# [新增] 自定义订阅路径密钥 (密码)
-CUSTOM_SUB_SECRET="hello"
+# [配置] 端口1 (主端口) 协议选择
+# 可选值: "tuic" 或 "hy2"
+# 晚高峰建议用 hy2，平时建议用 tuic
+PORT1_PROTOCOL="hy2"
 
 # [配置] 手动填写第二个端口 (例如: "10086")
 # 留空则仅使用自动获取的端口
 MANUAL_SECOND_PORT="25109"
+
+# [配置] 自定义订阅路径密钥 (密码)
+CUSTOM_SUB_SECRET="hello"
 
 # 固定隧道填写token，不填默认为临时隧道
 ARGO_TOKEN=""
@@ -73,27 +78,32 @@ PORT_COUNT=${#AVAILABLE_PORTS[@]}
 echo "[端口] 最终使用 $PORT_COUNT 个: ${AVAILABLE_PORTS[*]}"
 
 # ================== 端口分配逻辑 ==================
+
+# 辅助变量：主端口
+PRIMARY_PORT=${AVAILABLE_PORTS[0]}
+HTTP_PORT=${AVAILABLE_PORTS[0]}
+
+# 根据用户选择分配主端口协议
+if [ "$PORT1_PROTOCOL" == "tuic" ]; then
+    TUIC_PORT=$PRIMARY_PORT
+    HY2_PORT=""
+    PROTOCOL_NAME="TUIC"
+else
+    HY2_PORT=$PRIMARY_PORT
+    TUIC_PORT=""
+    PROTOCOL_NAME="Hy2"
+fi
+
 if [ $PORT_COUNT -eq 1 ]; then
     # === 单端口模式 ===
-    # 端口1: TUIC (UDP) + HTTP (TCP)
-    TUIC_PORT=${AVAILABLE_PORTS[0]}
-    HTTP_PORT=${AVAILABLE_PORTS[0]}
-    
-    # SS 需要同时占用 TCP/UDP，但 TCP 已被 HTTP 占用，所以无法启动 SS
     SS_PORT=""
-    
     SINGLE_PORT_MODE=true
-    echo "[警告] 仅检测到 1 个端口。端口已分配给 TUIC(UDP) 和 HTTP(TCP)。"
+    echo "[警告] 仅检测到 1 个端口。端口已分配给 ${PROTOCOL_NAME}(UDP) 和 HTTP(TCP)。"
     echo "[注意] 由于端口冲突，Shadowsocks 将不会启动！请配置第二个端口以启用 SS。"
 else
     # === 双端口模式 (推荐) ===
-    # 端口1: TUIC (UDP) + HTTP (TCP)
-    TUIC_PORT=${AVAILABLE_PORTS[0]}
-    HTTP_PORT=${AVAILABLE_PORTS[0]}
-    
     # 端口2: Shadowsocks (TCP + UDP)
     SS_PORT=${AVAILABLE_PORTS[1]}
-    
     SINGLE_PORT_MODE=false
 fi
 
@@ -132,7 +142,7 @@ download_file() {
 download_file "${BASE_URL}/sb" "$SB_FILE"
 download_file "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARGO_ARCH}" "$ARGO_FILE"
 
-# ================== 证书生成 (TUIC需要) ==================
+# ================== 证书生成 (TUIC/HY2需要) ==================
 echo "[证书] 生成中..."
 if command -v openssl >/dev/null 2>&1; then
     openssl req -x509 -newkey rsa:2048 -nodes -sha256 -keyout "${FILE_PATH}/private.key" -out "${FILE_PATH}/cert.pem" -days 3650 -subj "/CN=www.bing.com" >/dev/null 2>&1
@@ -161,14 +171,18 @@ generate_sub() {
     local argo_domain="$1"
     > "${FILE_PATH}/list.txt"
     
-    # TUIC (UDP)
+    # TUIC (UDP) - 仅当选中 TUIC 时生成
     if [ -n "$TUIC_PORT" ]; then
         echo "tuic://${UUID}:admin@${PUBLIC_IP}:${TUIC_PORT}?sni=www.bing.com&alpn=h3&congestion_control=bbr&allowInsecure=1#TUIC-${ISP}" >> "${FILE_PATH}/list.txt"
     fi
 
+    # Hysteria2 (UDP) - 仅当选中 Hy2 时生成
+    if [ -n "$HY2_PORT" ]; then
+        echo "hysteria2://${UUID}@${PUBLIC_IP}:${HY2_PORT}/?sni=www.bing.com&insecure=1#Hy2-${ISP}" >> "${FILE_PATH}/list.txt"
+    fi
+
     # Shadowsocks (TCP + UDP)
     if [ -n "$SS_PORT" ]; then
-        # 生成 ss://base64(method:password)@ip:port
         SS_BASE64=$(echo -n "aes-256-gcm:${UUID}" | base64 -w 0 2>/dev/null || echo -n "aes-256-gcm:${UUID}" | openssl base64 | tr -d '\n')
         echo "ss://${SS_BASE64}@${PUBLIC_IP}:${SS_PORT}#SS-${ISP}" >> "${FILE_PATH}/list.txt"
     fi
@@ -180,7 +194,7 @@ generate_sub() {
 }
 
 # ================== HTTP 服务器脚本 ==================
-# 这里的端口使用 Port 1 (HTTP_PORT)
+if [ -n "$HTTP_PORT" ]; then
 cat > "${FILE_PATH}/server.js" <<JSEOF
 const http = require('http');
 const fs = require('fs');
@@ -197,18 +211,21 @@ http.createServer((req, res) => {
 }).listen(port, bind, () => console.log('HTTP on ' + bind + ':' + port));
 JSEOF
 
-echo "[HTTP] 启动订阅服务 (端口 $HTTP_PORT)..."
-node "${FILE_PATH}/server.js" $HTTP_PORT 0.0.0.0 &
-HTTP_PID=$!
-sleep 1
-echo "[HTTP] 订阅服务已启动"
+    echo "[HTTP] 启动订阅服务 (端口 $HTTP_PORT)..."
+    node "${FILE_PATH}/server.js" $HTTP_PORT 0.0.0.0 &
+    HTTP_PID=$!
+    sleep 1
+    echo "[HTTP] 订阅服务已启动"
+else
+    echo "[HTTP] 跳过启动 (没有可用的 TCP 端口)"
+fi
 
 # ================== 生成 sing-box 配置 ==================
 echo "[CONFIG] 生成配置..."
 
 INBOUNDS=""
 
-# TUIC (UDP) - Port 1
+# TUIC (UDP) - Port 1 (如果被选中)
 if [ -n "$TUIC_PORT" ]; then
     INBOUNDS="{
         \"type\": \"tuic\",
@@ -217,6 +234,25 @@ if [ -n "$TUIC_PORT" ]; then
         \"listen_port\": ${TUIC_PORT},
         \"users\": [{\"uuid\": \"${UUID}\", \"password\": \"admin\"}],
         \"congestion_control\": \"bbr\",
+        \"tls\": {
+            \"enabled\": true,
+            \"alpn\": [\"h3\"],
+            \"certificate_path\": \"${FILE_PATH}/cert.pem\",
+            \"key_path\": \"${FILE_PATH}/private.key\"
+        }
+    }"
+fi
+
+# Hysteria2 (UDP) - Port 1 (如果被选中)
+if [ -n "$HY2_PORT" ]; then
+    [ -n "$INBOUNDS" ] && INBOUNDS="${INBOUNDS},"
+    INBOUNDS="${INBOUNDS}{
+        \"type\": \"hysteria2\",
+        \"tag\": \"hy2-in\",
+        \"listen\": \"::\",
+        \"listen_port\": ${HY2_PORT},
+        \"users\": [{\"password\": \"${UUID}\"}],
+        \"ignore_client_bandwidth\": true,
         \"tls\": {
             \"enabled\": true,
             \"alpn\": [\"h3\"],
@@ -300,17 +336,17 @@ SUB_URL="http://${PUBLIC_IP}:${HTTP_PORT}/${SUB_PATH}"
 echo ""
 echo "==================================================="
 if [ "$SINGLE_PORT_MODE" = true ]; then
-    echo "模式: 单端口 (TUIC + Argo)"
+    echo "模式: 单端口 ($PROTOCOL_NAME + Argo)"
     echo "警告: 未配置第二个端口，SS (Shadowsocks) 已禁用。"
     echo ""
     echo "代理节点:"
-    echo "  - TUIC (UDP):   ${PUBLIC_IP}:${TUIC_PORT}"
+    echo "  - $PROTOCOL_NAME (UDP):    ${PUBLIC_IP}:${PRIMARY_PORT}"
     [ -n "$ARGO_DOMAIN" ] && echo "  - Argo (WS):    ${ARGO_DOMAIN}"
 else
-    echo "模式: 双端口 (TUIC + SS + Argo)"
+    echo "模式: 双端口 ($PROTOCOL_NAME + SS + Argo)"
     echo ""
     echo "代理节点:"
-    echo "  - TUIC (UDP):   ${PUBLIC_IP}:${TUIC_PORT}"
+    echo "  - $PROTOCOL_NAME (UDP):    ${PUBLIC_IP}:${PRIMARY_PORT}"
     echo "  - SS (TCP+UDP): ${PUBLIC_IP}:${SS_PORT}"
     [ -n "$ARGO_DOMAIN" ] && echo "  - Argo (WS):    ${ARGO_DOMAIN}"
 fi
