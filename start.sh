@@ -2,11 +2,20 @@
 set -e
 
 # ================== 配置区域 ==================
+
+# [新增] 自定义订阅路径密钥 (密码)
+CUSTOM_SUB_SECRET="hello"
+
+# [新增] 手动填写第二个端口 (如果面板不自动传递，请在此处填写)
+# 例如: MANUAL_SECOND_PORT="10086"
+# 留空则仅使用自动获取的端口
+MANUAL_SECOND_PORT="25109"
+
 # 固定隧道填写token，不填默认为临时隧道
 ARGO_TOKEN=""
 
 # 单端口模式 UDP 协议选择: hy2 (默认) 或 tuic
-SINGLE_PORT_UDP="hy2"
+SINGLE_PORT_UDP="tuic"
 
 # ================== CF 优选域名列表 ==================
 CF_DOMAINS=(
@@ -46,12 +55,26 @@ echo "[CF优选] 测试中..."
 BEST_CF_DOMAIN=$(select_random_cf_domain)
 echo "[CF优选] $BEST_CF_DOMAIN"
 
-# ================== 获取端口 ==================
+# ================== 获取端口 (自动+手动) ==================
+# 1. 获取自动分配的主端口
 [ -n "$SERVER_PORT" ] && PORTS_STRING="$SERVER_PORT" || PORTS_STRING=""
+
+# 2. 如果填写了手动端口，拼接到后面
+if [ -n "$MANUAL_SECOND_PORT" ]; then
+    if [ -n "$PORTS_STRING" ]; then
+        PORTS_STRING="$PORTS_STRING $MANUAL_SECOND_PORT"
+    else
+        PORTS_STRING="$MANUAL_SECOND_PORT"
+    fi
+    echo "[端口] 检测到手动配置的第二端口: $MANUAL_SECOND_PORT"
+fi
+
+# 3. 解析端口数组
 read -ra AVAILABLE_PORTS <<< "$PORTS_STRING"
 PORT_COUNT=${#AVAILABLE_PORTS[@]}
-[ $PORT_COUNT -eq 0 ] && echo "[错误] 未找到端口" && exit 1
-echo "[端口] 发现 $PORT_COUNT 个: ${AVAILABLE_PORTS[*]}"
+
+[ $PORT_COUNT -eq 0 ] && echo "[错误] 未找到端口 (自动获取失败且未手动指定)" && exit 1
+echo "[端口] 最终使用 $PORT_COUNT 个: ${AVAILABLE_PORTS[*]}"
 
 # ================== 端口分配逻辑 ==================
 if [ $PORT_COUNT -eq 1 ]; then
@@ -63,19 +86,32 @@ if [ $PORT_COUNT -eq 1 ]; then
     HTTP_PORT=${AVAILABLE_PORTS[0]}
     SINGLE_PORT_MODE=true
 else
+    # 端口1 (自动获取的): 给 TUIC + Reality
     TUIC_PORT=${AVAILABLE_PORTS[0]}
-    HY2_PORT=${AVAILABLE_PORTS[1]}
     REALITY_PORT=${AVAILABLE_PORTS[0]}
+    
+    # 端口2 (手动填写的): 给 Hysteria2 + HTTP订阅
+    HY2_PORT=${AVAILABLE_PORTS[1]}
     HTTP_PORT=${AVAILABLE_PORTS[1]}
+    
     SINGLE_PORT_MODE=false
 fi
 
 ARGO_PORT=8081
 
-# ================== UUID ==================
+# ================== UUID 与 路径逻辑 ==================
 UUID_FILE="${FILE_PATH}/uuid.txt"
 [ -f "$UUID_FILE" ] && UUID=$(cat "$UUID_FILE") || { UUID=$(cat /proc/sys/kernel/random/uuid); echo "$UUID" > "$UUID_FILE"; }
 echo "[UUID] $UUID"
+
+# [逻辑] 决定最终的订阅路径
+if [ -n "$CUSTOM_SUB_SECRET" ]; then
+    SUB_PATH="$CUSTOM_SUB_SECRET"
+    echo "[安全] 使用自定义订阅路径: /$SUB_PATH"
+else
+    SUB_PATH="$UUID"
+    echo "[安全] 使用随机 UUID 路径: /$SUB_PATH"
+fi
 
 # ================== 架构检测 & 下载 ==================
 ARCH=$(uname -m)
@@ -125,8 +161,7 @@ else
 fi
 echo "[证书] 已就绪"
 
-# ===== ISP =====
-ISP="Node"
+# ================== ISP ==================
 if [ "$CURL_AVAILABLE" = true ]; then
     JSON_DATA=$(curl -s --max-time 2 -H "Referer: https://speed.cloudflare.com/" https://speed.cloudflare.com/meta 2>/dev/null)
     if [ -n "$JSON_DATA" ]; then
@@ -166,10 +201,13 @@ const fs = require('fs');
 const port = process.argv[2] || 8080;
 const bind = process.argv[3] || '0.0.0.0';
 http.createServer((req, res) => {
-    if (req.url.includes('/sub') || req.url.includes('/${UUID}')) {
+    if (req.url.includes('/${SUB_PATH}')) {
         res.writeHead(200, {'Content-Type': 'text/plain; charset=utf-8'});
         try { res.end(fs.readFileSync('${FILE_PATH}/sub.txt', 'utf8')); } catch(e) { res.end('error'); }
-    } else { res.writeHead(404); res.end('404'); }
+    } else { 
+        res.writeHead(404); 
+        res.end('404 Not Found'); 
+    }
 }).listen(port, bind, () => console.log('HTTP on ' + bind + ':' + port));
 JSEOF
 
@@ -297,7 +335,7 @@ done
 generate_sub "$ARGO_DOMAIN"
 
 # ================== 确定订阅链接 ==================
-SUB_URL="http://${PUBLIC_IP}:${HTTP_PORT}/sub"
+SUB_URL="http://${PUBLIC_IP}:${HTTP_PORT}/${SUB_PATH}"
 
 # ================== 输出结果 ==================
 echo ""
@@ -320,6 +358,7 @@ else
 fi
 echo ""
 echo "订阅链接: $SUB_URL"
+echo "注意: 请妥善保管订阅链接，不要泄露给他人"
 echo "==================================================="
 echo ""
 
