@@ -5,12 +5,9 @@
 DEFAULT_PROTOCOL="hy2"
 
 # [配置] 手动填写第二个端口 (例如: "10086")
-MANUAL_SECOND_PORT="25109"
+MANUAL_SECOND_PORT="10086"
 
-# [配置] 固定 UUID (留空则每次重启生成新的)
-FIXED_UUID=""
-
-# [配置] 自定义订阅路径密钥 (面板密码)
+# [配置] 控制面板固定路径/密钥 (写死)
 CUSTOM_SUB_SECRET="hello"
 
 # 固定隧道填写token
@@ -19,13 +16,15 @@ ARGO_TOKEN=""
 # ================== 核心循环逻辑 ==================
 
 CONFIG_FILE="saved_config.txt"
+USERS_FILE="users.json"
 
-# 定义清理函数 (优化点3: 增加引号和非空判断，增强稳定性)
+# 强力清理函数
 cleanup() {
     echo "[系统] 正在清理进程..."
-    [ -n "$SB_PID" ] && kill "$SB_PID" 2>/dev/null
-    [ -n "$HTTP_PID" ] && kill "$HTTP_PID" 2>/dev/null
-    [ -n "$ARGO_PID" ] && kill "$ARGO_PID" 2>/dev/null
+    [ -n "$SB_PID" ] && kill -9 "$SB_PID" 2>/dev/null
+    [ -n "$HTTP_PID" ] && kill -9 "$HTTP_PID" 2>/dev/null
+    [ -n "$ARGO_PID" ] && kill -9 "$ARGO_PID" 2>/dev/null
+    pkill -9 -f "sb run -c" 2>/dev/null
     rm -f "$FILE_PATH/.restart_flag"
 }
 
@@ -33,7 +32,7 @@ trap "cleanup; exit 0" SIGTERM SIGINT
 
 while true; do
     echo "==================================================="
-    echo "   🚀 正在启动服务 (v4.4) ..."
+    echo "   🚀 正在启动服务 (v5.7) ..."
     echo "==================================================="
 
     # ================== 变量与目录准备 ==================
@@ -43,15 +42,20 @@ while true; do
     export FILE_PATH="${PWD}/.npm"
     rm -rf "$FILE_PATH"
     mkdir -p "$FILE_PATH"
+    
+    # 确保用户数据文件存在
+    if [ ! -f "$USERS_FILE" ] || [ ! -s "$USERS_FILE" ]; then
+        INIT_UUID=$(cat /proc/sys/kernel/random/uuid)
+        echo "[{\"uuid\":\"$INIT_UUID\",\"name\":\"默认用户\"}]" > "$USERS_FILE"
+        echo "[初始化] 已创建默认用户文件: $USERS_FILE"
+    fi
 
     # ================== 读取/保存 协议配置 ==================
     if [ -f "$CONFIG_FILE" ]; then
         PORT1_PROTOCOL=$(cat "$CONFIG_FILE")
-        echo "[配置] 读取到保存的协议: $PORT1_PROTOCOL"
     else
         PORT1_PROTOCOL="$DEFAULT_PROTOCOL"
         echo "$PORT1_PROTOCOL" > "$CONFIG_FILE"
-        echo "[配置] 使用默认协议: $PORT1_PROTOCOL"
     fi
 
     # ================== 获取公网 IP ==================
@@ -64,7 +68,7 @@ while true; do
     fi
     echo "[网络] 公网 IP: $PUBLIC_IP"
 
-    # ================== CF 优选 (保持原版逻辑) ==================
+    # ================== CF 优选 ==================
     select_random_cf_domain() {
         local available=()
         for domain in "${CF_DOMAINS[@]}"; do
@@ -116,34 +120,15 @@ while true; do
     fi
     ARGO_PORT=8081
 
-    # SS 端口显示文本
-    if [ -n "$SS_PORT" ]; then
-        SS_DISPLAY="$SS_PORT"
-    else
-        SS_DISPLAY="未开启"
-    fi
+    if [ -n "$SS_PORT" ]; then SS_DISPLAY="$SS_PORT"; else SS_DISPLAY="未开启"; fi
 
-    # ================== UUID 逻辑 (优化点4: 严格遵守不读取缓存) ==================
-    UUID_FILE="uuid.txt"
-    if [ -n "$FIXED_UUID" ]; then
-        UUID="$FIXED_UUID"
-        echo "$UUID" > "$UUID_FILE"
-    else
-        # 严格执行：每次循环(重启)都生成新UUID
-        UUID=$(cat /proc/sys/kernel/random/uuid)
-        echo "$UUID" > "$UUID_FILE"
-        echo "[UUID] 新生成: $UUID"
-    fi
-    
+    # ================== 面板路径处理 ==================
     if [ -n "$CUSTOM_SUB_SECRET" ]; then
-        SUB_PATH="$CUSTOM_SUB_SECRET"
+        PANEL_KEY="$CUSTOM_SUB_SECRET"
     else
-        SUB_PATH="$UUID"
+        PANEL_KEY="admin"
     fi
-
-    # [新增] 提前计算订阅链接，供面板显示
-    SUB_URL="http://${PUBLIC_IP}:${HTTP_PORT}/${SUB_PATH}"
-    PANEL_URL="http://${PUBLIC_IP}:${HTTP_PORT}/panel/${SUB_PATH}"
+    PANEL_URL="http://${PUBLIC_IP}:${HTTP_PORT}/panel/${PANEL_KEY}"
 
     # ================== 下载核心 ==================
     ARCH=$(uname -m)
@@ -169,46 +154,190 @@ while true; do
         printf -- "-----BEGIN CERTIFICATE-----\nMIIBejCCASGgAwIBAgIUFWeQL3556PNJLp/veCFxGNj9crkwCgYIKoZIzj0EAwIw\nEzERMA8GA1UEAwwIYmluZy5jb20wHhcNMjUwMTAxMDEwMTAwWhcNMzUwMTAxMDEw\nMTAwWjATMREwDwYDVQQDDAhiaW5nLmNvbTBZMBMGByqGSM49AgEGCCqGSM49AwEH\nA0IABNZB2nz49O6yRvh26B9npACOK/nuky9/BlgEgJ54Ga3qEAxdegEWv07Mi8ha\nD5IU8Um3oR/zgRIx7UmRmg4TKkOjUzBRMB0GA1UdDgQWBBTV1cFID7UISE7PLTBR\nBfGbgrkMNzAfBgNVHSMEGDAWgBTV1cFID7UISE7PLTBRBfGbgrkMNzAPBgNVHRMB\nAf8EBTADAQH/MAoGCCqGSM49BAMCA0cAMEQCIARDAJvg0vd/ytrQVvEcSm6XTlB+\neQ6OFb9LbLYL9Zi+AiB+foMbi4y/0YUQlTtz7as9S8/lciBF5VCUoVIKS+vX2g==\n-----END CERTIFICATE-----\n" > "${FILE_PATH}/cert.pem"
     fi
 
-    # ================== 初始化订阅文件 ==================
-    > "${FILE_PATH}/list.txt"
-    if [ -n "$TUIC_PORT" ]; then
-        echo "tuic://${UUID}:admin@${PUBLIC_IP}:${TUIC_PORT}?sni=www.bing.com&alpn=h3&congestion_control=bbr&allowInsecure=1#TUIC-Node" >> "${FILE_PATH}/list.txt"
-    fi
-    if [ -n "$HY2_PORT" ]; then
-        echo "hysteria2://${UUID}@${PUBLIC_IP}:${HY2_PORT}/?sni=www.bing.com&insecure=1#Hy2-Node" >> "${FILE_PATH}/list.txt"
-    fi
-    if [ -n "$SS_PORT" ]; then
-        SS_BASE64=$(echo -n "aes-256-gcm:${UUID}" | base64 -w 0 2>/dev/null || echo -n "aes-256-gcm:${UUID}" | openssl base64 | tr -d '\n')
-        echo "ss://${SS_BASE64}@${PUBLIC_IP}:${SS_PORT}#SS-Node" >> "${FILE_PATH}/list.txt"
-    fi
-    cat "${FILE_PATH}/list.txt" > "${FILE_PATH}/sub.txt"
+    # ================== 初次配置生成 ==================
+cat > "${FILE_PATH}/gen_config.js" <<JSGEN
+const fs = require('fs');
+try {
+    let users = [];
+    try { users = JSON.parse(fs.readFileSync('${USERS_FILE}', 'utf8')); } catch(e) { users = []; }
 
-    # ================== 启动 Sing-box ==================
-    INBOUNDS=""
-    if [ -n "$TUIC_PORT" ]; then
-        INBOUNDS="{ \"type\": \"tuic\", \"tag\": \"tuic-in\", \"listen\": \"::\", \"listen_port\": ${TUIC_PORT}, \"users\": [{\"uuid\": \"${UUID}\", \"password\": \"admin\"}], \"congestion_control\": \"bbr\", \"tls\": { \"enabled\": true, \"alpn\": [\"h3\"], \"certificate_path\": \"${FILE_PATH}/cert.pem\", \"key_path\": \"${FILE_PATH}/private.key\" } }"
-    fi
-    if [ -n "$HY2_PORT" ]; then
-        [ -n "$INBOUNDS" ] && INBOUNDS="${INBOUNDS},"
-        INBOUNDS="${INBOUNDS}{ \"type\": \"hysteria2\", \"tag\": \"hy2-in\", \"listen\": \"::\", \"listen_port\": ${HY2_PORT}, \"users\": [{\"password\": \"${UUID}\"}], \"ignore_client_bandwidth\": true, \"tls\": { \"enabled\": true, \"alpn\": [\"h3\"], \"certificate_path\": \"${FILE_PATH}/cert.pem\", \"key_path\": \"${FILE_PATH}/private.key\" } }"
-    fi
-    if [ -n "$SS_PORT" ]; then
-        [ -n "$INBOUNDS" ] && INBOUNDS="${INBOUNDS},"
-        INBOUNDS="${INBOUNDS}{ \"type\": \"shadowsocks\", \"tag\": \"ss-in\", \"listen\": \"::\", \"listen_port\": ${SS_PORT}, \"method\": \"aes-256-gcm\", \"password\": \"${UUID}\" }"
-    fi
-    [ -n "$INBOUNDS" ] && INBOUNDS="${INBOUNDS},"
-    INBOUNDS="${INBOUNDS}{ \"type\": \"vless\", \"tag\": \"vless-argo-in\", \"listen\": \"127.0.0.1\", \"listen_port\": ${ARGO_PORT}, \"users\": [{\"uuid\": \"${UUID}\"}], \"transport\": { \"type\": \"ws\", \"path\": \"/${UUID}-vless\" } }"
+    const firstUserUUID = (users && users.length > 0 && users[0].uuid) ? users[0].uuid : "00000000-0000-0000-0000-000000000000";
+    const tuicPort = '${TUIC_PORT}' ? parseInt('${TUIC_PORT}') : 0;
+    const hy2Port = '${HY2_PORT}' ? parseInt('${HY2_PORT}') : 0;
+    const ssPort = '${SS_PORT}' ? parseInt('${SS_PORT}') : 0;
+    
+    const tuicUsers = users.map(u => ({ uuid: u.uuid, password: "admin" }));
+    const hy2Users = users.map(u => ({ password: u.uuid }));
+    const ssUsers = users.map(u => ({ password: u.uuid }));
+    const vlessUsers = users.map(u => ({ uuid: u.uuid }));
 
-cat > "${FILE_PATH}/config.json" <<CFGEOF
-{ "log": {"level": "warn"}, "inbounds": [${INBOUNDS}], "outbounds": [{"type": "direct", "tag": "direct"}] }
-CFGEOF
+    const inbounds = [];
+    if (tuicPort > 0) {
+        inbounds.push({
+            type: "tuic", tag: "tuic-in", listen: "::", listen_port: tuicPort, users: tuicUsers, congestion_control: "bbr",
+            tls: { enabled: true, alpn: ["h3"], certificate_path: "${FILE_PATH}/cert.pem", key_path: "${FILE_PATH}/private.key" }
+        });
+    }
+    if (hy2Port > 0) {
+        inbounds.push({
+            type: "hysteria2", tag: "hy2-in", listen: "::", listen_port: hy2Port, users: hy2Users, ignore_client_bandwidth: true,
+            tls: { enabled: true, alpn: ["h3"], certificate_path: "${FILE_PATH}/cert.pem", key_path: "${FILE_PATH}/private.key" }
+        });
+    }
+    if (ssPort > 0) {
+        inbounds.push({
+            type: "shadowsocks", tag: "ss-in", listen: "::", listen_port: ssPort, method: "aes-256-gcm", 
+            password: firstUserUUID, users: ssUsers 
+        });
+    }
+    inbounds.push({
+        type: "vless", tag: "vless-argo-in", listen: "127.0.0.1", listen_port: ${ARGO_PORT}, users: vlessUsers, transport: { type: "ws", path: "/vless-argo" }
+    });
+
+    console.log(JSON.stringify({ log: { level: "warn" }, inbounds: inbounds, outbounds: [{ type: "direct", tag: "direct" }] }));
+} catch(e) { console.error(e); }
+JSGEN
+
+    node "${FILE_PATH}/gen_config.js" > "${FILE_PATH}/config.json"
 
     echo "[SING-BOX] 启动中..."
     "$SB_FILE" run -c "${FILE_PATH}/config.json" &
     SB_PID=$!
 
-    # ================== Node.js 控制面板 (增加订阅显示) ==================
+    # ================== Node.js 控制面板 (热重载版) ==================
     if [ -n "$HTTP_PORT" ]; then
+
+# 1. 生成 HTML (纯前端逻辑)
+cat > "${FILE_PATH}/panel.html" <<HTMLEOF
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Server Manager</title>
+    <style>
+        body { background: #1a1b1e; color: #e9ecef; font-family: sans-serif; margin: 0; padding: 20px; }
+        .container { max-width: 800px; margin: 0 auto; }
+        .card { background: #25262b; padding: 20px; border-radius: 12px; box-shadow: 0 4px 24px rgba(0,0,0,0.2); margin-bottom: 20px; }
+        h2 { margin-top: 0; color: #4dabf7; display: flex; justify-content: space-between; align-items: center; }
+        .btn { border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 14px; color: #fff; text-decoration: none; display: inline-block;}
+        .btn-primary { background: #1971c2; } .btn-primary:hover { background: #1864ab; }
+        .btn-success { background: #2f9e44; } .btn-success:hover { background: #2b8a3e; }
+        .btn-danger { background: #e03131; } .btn-danger:hover { background: #c92a2a; }
+        .btn-sm { padding: 4px 8px; font-size: 12px; margin-left: 5px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        th, td { text-align: left; padding: 12px; border-bottom: 1px solid #373a40; }
+        th { color: #909296; font-size: 12px; text-transform: uppercase; }
+        input[type="text"] { background: #1a1b1e; border: 1px solid #373a40; color: #fff; padding: 6px; border-radius: 4px; width: 100%; box-sizing: border-box; }
+        .action-cell { display: flex; gap: 5px; }
+        .protocol-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; background: #373a40; font-size: 12px; margin-right: 5px; }
+        .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #2f9e44; color: white; padding: 10px 20px; border-radius: 50px; opacity: 0; transition: 0.3s; pointer-events: none; }
+        .toast.show { opacity: 1; bottom: 40px; }
+    </style>
+</head>
+<body>
+    <div class="toast" id="toast">✅ 操作生效 (Changes Applied)</div>
+    <div class="container">
+        <div class="card">
+            <h2>
+                <span>🚀 服务管理</span>
+                <span style="font-size:12px; color:#aaa; font-weight:normal;">Hot Reload Active</span>
+            </h2>
+            <div style="margin-bottom: 15px;">
+                <span class="protocol-badge">当前协议: ${PROTOCOL_NAME}</span>
+                <span class="protocol-badge">SS端口: ${SS_DISPLAY}</span>
+            </div>
+            <div style="display:flex; gap:10px;">
+                <button class="btn btn-primary" style="flex:1" onclick="switchProto('tuic')">切换 TUIC (需重启)</button>
+                <button class="btn btn-primary" style="flex:1" onclick="switchProto('hy2')">切换 Hysteria2 (需重启)</button>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>
+                <span>👥 用户订阅管理</span>
+                <button class="btn btn-primary btn-sm" onclick="addUser()">+ 新增用户</button>
+            </h2>
+            <table>
+                <thead><tr><th width="20%">备注</th><th width="45%">UUID</th><th width="15%">订阅链接</th><th width="20%">操作</th></tr></thead>
+                <tbody id="userTable"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        function generateUUID() {
+            var d = new Date().getTime();
+            var d2 = ((typeof performance !== 'undefined') && performance.now && (performance.now()*1000)) || 0;
+            return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+                var r = Math.random() * 16;
+                if(d > 0){ r = (d + r)%16 | 0; d = Math.floor(d/16); } else { r = (d2 + r)%16 | 0; d2 = Math.floor(d2/16); }
+                return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+            });
+        }
+
+        let users = [];
+        
+        function showToast() { 
+            const t = document.getElementById('toast'); t.classList.add('show'); 
+            setTimeout(() => t.classList.remove('show'), 2000); 
+        }
+
+        function loadUsers() {
+            fetch('?action=get_users').then(r=>r.json()).then(d => { users = d; render(); });
+        }
+
+        function render() {
+            const tbody = document.getElementById('userTable');
+            tbody.innerHTML = \`\`; 
+            if (users.length === 0) tbody.innerHTML = '<tr><td colspan="4" style="text-align:center; color:#777;">暂无用户</td></tr>';
+            users.forEach((u, idx) => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = \`
+                    <td><input type="text" value="\${u.name}" onchange="updateRemark(\${idx}, this.value)"></td>
+                    <td><div style="display:flex; gap:5px;"><input type="text" value="\${u.uuid}" readonly style="font-family:monospace; font-size:12px;"></div></td>
+                    <td><a href="/sub/\${u.uuid}" target="_blank" class="btn btn-primary btn-sm">打开</a></td>
+                    <td class="action-cell">
+                        <button class="btn btn-primary btn-sm" onclick="regenUUID(\${idx})">重置</button>
+                        <button class="btn btn-danger btn-sm" onclick="delUser(\${idx})">删除</button>
+                    </td>
+                \`;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function refresh() { loadUsers(); showToast(); }
+
+        function addUser() {
+            fetch('?action=manage_user&type=add&name=新用户&uuid=' + generateUUID()).then(() => refresh());
+        }
+
+        function delUser(idx) {
+            if(!confirm('确定删除吗？')) return;
+            fetch('?action=manage_user&type=del&uuid=' + users[idx].uuid).then(() => refresh());
+        }
+
+        function regenUUID(idx) {
+            fetch('?action=manage_user&type=reset&old_uuid=' + users[idx].uuid + '&new_uuid=' + generateUUID()).then(() => refresh());
+        }
+
+        function updateRemark(idx, newName) {
+            fetch('?action=manage_user&type=remark&uuid=' + users[idx].uuid + '&name=' + encodeURIComponent(newName)).then(() => showToast());
+        }
+        
+        function switchProto(proto) {
+             if(!confirm('切换协议需要重启服务，确定吗？')) return;
+             fetch('?action=switch_proto&proto=' + proto).then(() => {
+                 alert('正在切换并重启...'); setTimeout(() => location.reload(), 2000);
+             });
+        }
+
+        loadUsers();
+    </script>
+</body>
+</html>
+HTMLEOF
+
+# 2. 生成 Server.js (核心：集成配置生成与热重载)
 cat > "${FILE_PATH}/server.js" <<JSEOF
 const http = require('http');
 const fs = require('fs');
@@ -216,149 +345,141 @@ const port = process.argv[2] || 8080;
 const bind = process.argv[3] || '0.0.0.0';
 const sb_pid = process.argv[4];
 const configFile = '${CONFIG_FILE}';
+const usersFile = '${USERS_FILE}';
+const panelKey = '${PANEL_KEY}';
+const publicIp = '${PUBLIC_IP}';
+const tuicPort = '${TUIC_PORT}' ? parseInt('${TUIC_PORT}') : 0;
+const hy2Port = '${HY2_PORT}' ? parseInt('${HY2_PORT}') : 0;
+const ssPort = '${SS_PORT}' ? parseInt('${SS_PORT}') : 0;
+const argoPort = ${ARGO_PORT};
+const bestCf = '${BEST_CF_DOMAIN}';
+const certPath = '${FILE_PATH}/cert.pem';
+const keyPath = '${FILE_PATH}/private.key';
 
-// HTML 模板
-const html = \`
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Server Control Panel</title>
-    <style>
-        body { background: #1a1b1e; color: #fff; font-family: sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
-        .card { background: #25262b; padding: 2rem; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.4); text-align: center; max-width: 400px; width: 90%; }
-        h1 { color: #4dabf7; margin-bottom: 0.5rem; }
-        .status { margin: 1rem 0; padding: 1rem; background: #2c2e33; border-radius: 8px; text-align: left; font-size: 0.9rem; }
-        .status span { display: block; margin: 5px 0; }
-        .btn { display: block; width: 100%; padding: 12px; margin: 10px 0; border: none; border-radius: 6px; font-size: 1rem; cursor: pointer; transition: 0.2s; color: #fff; }
-        .btn-blue { background: #1971c2; } .btn-blue:hover { background: #1864ab; }
-        .btn-green { background: #2f9e44; } .btn-green:hover { background: #2b8a3e; }
-        .btn-red { background: #e03131; } .btn-red:hover { background: #c92a2a; }
-        .tag { font-weight: bold; color: #fab005; }
-        .sub-box { margin-top: 15px; border-top: 1px solid #444; padding-top: 10px; }
-        .sub-input { width: 100%; box-sizing: border-box; background: #1a1b1e; border: 1px solid #555; color: #ccc; padding: 8px; border-radius: 4px; margin-top: 5px; outline: none; font-size: 0.8rem; }
-    </style>
-</head>
-<body>
-    <div class="card">
-        <h1>🚀 控制面板</h1>
-        <div class="status">
-            <span>当前协议: <b class="tag">${PROTOCOL_NAME}</b></span>
-            <span>运行 UUID: ${UUID}</span>
-            <span>SS 端口: ${SS_DISPLAY}</span>
-            <div class="sub-box">
-                <span style="color:#aaa; font-size:0.85rem;">订阅链接 (点击复制):</span>
-                <input type="text" class="sub-input" value="${SUB_URL}" readonly onclick="this.select(); document.execCommand('copy'); alert('已复制到剪贴板!')">
-            </div>
-        </div>
-        <button class="btn btn-blue" onclick="switchProto('tuic')">🔄 切换为 TUIC (UDP)</button>
-        <button class="btn btn-green" onclick="switchProto('hy2')">⚡ 切换为 Hysteria2 (UDP)</button>
-        <hr style="border-color: #444; margin: 1.5rem 0;">
-        <button class="btn btn-red" onclick="restart()">🔥 立即重启服务 (Restart)</button>
-    </div>
-    <script>
-        function switchProto(proto) {
-            if(!confirm('确定要切换协议并重启吗？连接将中断几秒。')) return;
-            fetch('?action=switch&proto=' + proto).then(res => res.text()).then(txt => document.body.innerHTML = '<h2 style="color:#fff">'+txt+'</h2>');
-        }
-        function restart() {
-            if(!confirm('确定要重启吗？UUID 可能会刷新。')) return;
-            fetch('?action=restart').then(res => res.text()).then(txt => document.body.innerHTML = '<h2 style="color:#fff">'+txt+'</h2>');
-        }
-    </script>
-</body>
-</html>
-\`;
+function getUsers() {
+    try { const data = fs.readFileSync(usersFile, 'utf8'); return data ? JSON.parse(data) : []; } catch(e) { return []; }
+}
+function saveUsers(users) { fs.writeFileSync(usersFile, JSON.stringify(users)); }
+
+// === 核心：Node.js 内置配置生成器 (用于热重载) ===
+function updateConfigAndReload() {
+    const users = getUsers();
+    const firstUserUUID = (users && users.length > 0 && users[0].uuid) ? users[0].uuid : "00000000-0000-0000-0000-000000000000";
+    
+    const tuicUsers = users.map(u => ({ uuid: u.uuid, password: "admin" }));
+    const hy2Users = users.map(u => ({ password: u.uuid }));
+    const ssUsers = users.map(u => ({ password: u.uuid }));
+    const vlessUsers = users.map(u => ({ uuid: u.uuid }));
+
+    const inbounds = [];
+    if (tuicPort > 0) inbounds.push({ type: "tuic", tag: "tuic-in", listen: "::", listen_port: tuicPort, users: tuicUsers, congestion_control: "bbr", tls: { enabled: true, alpn: ["h3"], certificate_path: certPath, key_path: keyPath } });
+    if (hy2Port > 0) inbounds.push({ type: "hysteria2", tag: "hy2-in", listen: "::", listen_port: hy2Port, users: hy2Users, ignore_client_bandwidth: true, tls: { enabled: true, alpn: ["h3"], certificate_path: certPath, key_path: keyPath } });
+    if (ssPort > 0) inbounds.push({ type: "shadowsocks", tag: "ss-in", listen: "::", listen_port: ssPort, method: "aes-256-gcm", password: firstUserUUID, users: ssUsers });
+    inbounds.push({ type: "vless", tag: "vless-argo-in", listen: "127.0.0.1", listen_port: argoPort, users: vlessUsers, transport: { type: "ws", path: "/vless-argo" } });
+
+    const config = { log: { level: "warn" }, inbounds: inbounds, outbounds: [{ type: "direct", tag: "direct" }] };
+    
+    // 写入配置并发送信号
+    fs.writeFileSync('${FILE_PATH}/config.json', JSON.stringify(config));
+    if (sb_pid) {
+        try { 
+            process.kill(sb_pid, 'SIGHUP'); 
+            console.log('[Node] Hot Reload: SIGHUP sent to Sing-box');
+        } catch(e) { console.error('[Node] Failed to reload Sing-box:', e); }
+    }
+}
+
+function generateSub(uuid, argoDomain) {
+    let content = '';
+    const users = getUsers();
+    const user = users.find(u => u.uuid === uuid);
+    if (!user) return "Error: User not found";
+    const remarks = user.name;
+
+    if (tuicPort) content += \`tuic://\${uuid}:admin@\${publicIp}:\${tuicPort}?sni=www.bing.com&alpn=h3&congestion_control=bbr&allowInsecure=1#TUIC-\${encodeURIComponent(remarks)}\\n\`;
+    if (hy2Port) content += \`hysteria2://\${uuid}@\${publicIp}:\${hy2Port}/?sni=www.bing.com&insecure=1#Hy2-\${encodeURIComponent(remarks)}\\n\`;
+    if (ssPort) { let ssBase64 = Buffer.from(\`aes-256-gcm:\${uuid}\`).toString('base64'); content += \`ss://\${ssBase64}@\${publicIp}:\${ssPort}#SS-\${encodeURIComponent(remarks)}\\n\`; }
+    if (argoDomain) content += \`vless://\${uuid}@\${bestCf}:443?encryption=none&security=tls&sni=\${argoDomain}&type=ws&host=\${argoDomain}&path=%2Fvless-argo#Argo-\${encodeURIComponent(remarks)}\\n\`;
+    return content;
+}
 
 http.createServer((req, res) => {
-    // 验证路径密钥
-    if (!req.url.includes('${SUB_PATH}')) {
-        res.writeHead(404);
-        res.end('404 Not Found');
+    const isPanel = req.url.startsWith('/panel/${PANEL_KEY}');
+    const isSub = req.url.startsWith('/sub/');
+    const url = new URL(req.url, 'http://localhost');
+    const params = url.searchParams;
+
+    // === 用户管理 API (热重载) ===
+    if (isPanel && params.get('action') === 'manage_user') {
+        const type = params.get('type');
+        let users = getUsers();
+        if (type === 'add') users.push({ name: params.get('name'), uuid: params.get('uuid') });
+        else if (type === 'del') users = users.filter(u => u.uuid !== params.get('uuid'));
+        else if (type === 'reset') { const u = users.find(u => u.uuid === params.get('old_uuid')); if(u) u.uuid = params.get('new_uuid'); }
+        else if (type === 'remark') { const u = users.find(u => u.uuid === params.get('uuid')); if(u) u.name = params.get('name'); }
+        
+        saveUsers(users);
+        updateConfigAndReload(); // 关键调用
+        res.end('ok');
         return;
     }
 
-    // === 控制面板 API ===
-    if (req.url.includes('/panel')) {
-        const urlParams = new URL(req.url, 'http://localhost').searchParams;
-        const action = urlParams.get('action');
+    if (isPanel && params.get('action') === 'get_users') { res.writeHead(200, {'Content-Type': 'application/json'}); res.end(JSON.stringify(getUsers())); return; }
+    
+    // 切换协议 (仍需重启脚本)
+    if (isPanel && params.get('action') === 'switch_proto') {
+        fs.writeFileSync(configFile, params.get('proto'));
+        fs.writeFileSync('${FILE_PATH}/.restart_flag', 'true');
+        if (sb_pid) try { process.kill(sb_pid, 'SIGTERM'); } catch(e) {}
+        res.end('ok');
+        return;
+    }
 
-        if (action === 'switch') {
-            const proto = urlParams.get('proto');
-            if (proto === 'tuic' || proto === 'hy2') {
-                fs.writeFileSync(configFile, proto);
-                res.writeHead(200, {'Content-Type': 'text/plain; charset=utf-8'});
-                res.end('正在切换协议并重启... (Switching to ' + proto + '...)');
-                fs.writeFileSync('${FILE_PATH}/.restart_flag', 'true');
-                if (sb_pid) try { process.kill(sb_pid, 'SIGTERM'); } catch(e) {}
-            }
-            return;
-        }
+    if (isPanel) { res.writeHead(200, {'Content-Type': 'text/html; charset=utf-8'}); try { res.end(fs.readFileSync('${FILE_PATH}/panel.html', 'utf8')); } catch(e) { res.end('Error'); } return; }
 
-        if (action === 'restart') {
+    if (isSub) {
+        const uuid = req.url.split('/sub/')[1];
+        const userExists = getUsers().some(u => u.uuid === uuid);
+        if (userExists) {
+            let argoDomain = '';
+            try { const log = fs.readFileSync('${FILE_PATH}/argo.log', 'utf8'); const match = log.match(/https:\/\/[a-zA-Z0-9-]+\.trycloudflare\.com/); if (match) argoDomain = match[0].replace('https://', ''); } catch(e) {}
             res.writeHead(200, {'Content-Type': 'text/plain; charset=utf-8'});
-            res.end('正在执行重启... (Restarting...)');
-            fs.writeFileSync('${FILE_PATH}/.restart_flag', 'true');
-            if (sb_pid) try { process.kill(sb_pid, 'SIGTERM'); } catch(e) {}
-            return;
-        }
-
-        res.writeHead(200, {'Content-Type': 'text/html; charset=utf-8'});
-        res.end(html);
+            res.end(generateSub(uuid, argoDomain));
+        } else { res.writeHead(404); res.end('User not found'); }
         return;
     }
-
-    // === 订阅链接 ===
-    if (req.url.includes('/${SUB_PATH}')) {
-        res.writeHead(200, {'Content-Type': 'text/plain; charset=utf-8'});
-        try { res.end(fs.readFileSync('${FILE_PATH}/sub.txt', 'utf8')); } catch(e) { res.end('error'); }
-        return;
-    }
-
-    res.writeHead(404);
-    res.end('404');
-
+    res.writeHead(404); res.end('404');
 }).listen(port, bind, () => console.log('HTTP on ' + bind + ':' + port));
 JSEOF
         node "${FILE_PATH}/server.js" $HTTP_PORT 0.0.0.0 $SB_PID &
         HTTP_PID=$!
     fi
 
-    # ================== 启动 Argo (保持原版逻辑) ==================
+    # ================== 启动 Argo ==================
     ARGO_LOG="${FILE_PATH}/argo.log"
     echo "[Argo] 启动隧道..."
-    "$ARGO_FILE" tunnel --edge-ip-version auto --protocol http2 --no-autoupdate --url http://127.0.0.1:${ARGO_PORT} > "$ARGO_LOG" 2>&1 &
+    if [ -n "$ARGO_TOKEN" ]; then
+         "$ARGO_FILE" tunnel --edge-ip-version auto --protocol http2 --no-autoupdate run --token "$ARGO_TOKEN" > "$ARGO_LOG" 2>&1 &
+    else
+         "$ARGO_FILE" tunnel --edge-ip-version auto --protocol http2 --no-autoupdate --url http://127.0.0.1:${ARGO_PORT} > "$ARGO_LOG" 2>&1 &
+    fi
     ARGO_PID=$!
     
-    (
-        sleep 5
-        ARGO_DOMAIN=$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' "$ARGO_LOG" 2>/dev/null | head -1 | sed 's|https://||')
-        if [ -n "$ARGO_DOMAIN" ]; then
-             echo "vless://${UUID}@${BEST_CF_DOMAIN}:443?encryption=none&security=tls&sni=${ARGO_DOMAIN}&type=ws&host=${ARGO_DOMAIN}&path=%2F${UUID}-vless#Argo-Node" >> "${FILE_PATH}/list.txt"
-             cat "${FILE_PATH}/list.txt" > "${FILE_PATH}/sub.txt"
-             echo "[Argo] 域名: $ARGO_DOMAIN"
-        fi
-    ) &
-
     # ================== 输出信息 ==================
     echo ""
     echo "==================================================="
-    echo "模式: 双端口 ($PROTOCOL_NAME + SS + Argo)"
-    echo "UUID: $UUID"
-    echo ""
-    echo "订阅链接: $SUB_URL"
-    echo "控制面板: $PANEL_URL"
+    echo "模式: 多用户管理 ($PROTOCOL_NAME + Argo)"
+    echo "控制面板地址: $PANEL_URL"
     echo "==================================================="
     echo ""
 
-    wait "$SB_PID" # 优化点3: 增加引号
+    wait "$SB_PID"
     
-    # 优化点3: 增加非空判断和引号
-    [ -n "$HTTP_PID" ] && kill "$HTTP_PID" 2>/dev/null
-    [ -n "$ARGO_PID" ] && kill "$ARGO_PID" 2>/dev/null
+    [ -n "$HTTP_PID" ] && kill -9 "$HTTP_PID" 2>/dev/null
+    [ -n "$ARGO_PID" ] && kill -9 "$ARGO_PID" 2>/dev/null
     
     if [ -f "${FILE_PATH}/.restart_flag" ]; then
-        echo "♻️ 重载配置中..."
+        echo "♻️ 协议切换，正在重启..."
         rm -f "${FILE_PATH}/.restart_flag"
         sleep 1
         continue 
