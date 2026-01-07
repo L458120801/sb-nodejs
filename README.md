@@ -42,13 +42,9 @@ ARGO_TOKEN	(可选) Cloudflare Tunnel Token	留空则使用临时随机隧道
 🚀 启动方式
 Bash
 
-# 赋予执行权限
-chmod +x start.sh
-
-# 启动服务
-./start.sh
 
 🎮 控制面板使用指南
+<img width="1431" height="634" alt="图片" src="https://github.com/user-attachments/assets/dc12e3d8-1545-492c-8af2-f2c85f4058ea" />
 
 服务启动后，脚本会输出控制面板的访问地址。
 
