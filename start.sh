@@ -5,18 +5,19 @@
 DEFAULT_PROTOCOL="hy2"
 
 # [配置] ShadowSocks 端口
-MANUAL_SECOND_PORT="25109"
+MANUAL_SECOND_PORT="24890"
 
 # [配置] 控制面板密钥 
 CUSTOM_SUB_SECRET="hello"
 
-# Argo Token (可选)
+# [默认] Argo Token (初始值，后续由面板控制)
 ARGO_TOKEN=""
 
 # ================== 核心循环逻辑 ==================
 
 CONFIG_FILE="saved_config.txt"
 USERS_FILE="users.json"
+ARGO_CONFIG_FILE="argo_config.json"
 
 # 脚本自身日志颜色保持
 log() {
@@ -32,7 +33,7 @@ cleanup() {
     [ -n "$HTTP_PID" ] && kill -9 "$HTTP_PID" 2>/dev/null
     [ -n "$ARGO_PID" ] && kill -9 "$ARGO_PID" 2>/dev/null
     
-    # 2. 兜底清理：使用 ps 查找残留的 sb 进程
+    # 2. 兜底清理:使用 ps 查找残留的 sb 进程
     PIDS=$(ps -ef 2>/dev/null | grep "${FILE_PATH}/sb" | grep -v grep | awk '{print $2}' 2>/dev/null)
     if [ -z "$PIDS" ]; then
         PIDS=$(ps 2>/dev/null | grep "${FILE_PATH}/sb" | grep -v grep | awk '{print $1}' 2>/dev/null)
@@ -52,7 +53,7 @@ trap "cleanup; exit 0" SIGTERM SIGINT
 while true; do
     echo ""
     echo "==================================================="
-    echo "   🚀 正在启动服务 (v7.5 五列精简版) ..."
+    echo "   🚀 正在启动服务 (v7.6 Argo Pro版) ..."
     echo "==================================================="
     echo ""
 
@@ -71,11 +72,20 @@ while true; do
         log "[初始化] 已创建默认用户文件: $USERS_FILE"
     fi
 
+    # 初始化 Argo 配置文件 (如果不存在)
+    if [ ! -f "$ARGO_CONFIG_FILE" ]; then
+        if [ -n "$ARGO_TOKEN" ]; then
+            echo "{\"mode\":\"fixed\",\"token\":\"$ARGO_TOKEN\",\"domain\":\"\"}" > "$ARGO_CONFIG_FILE"
+        else
+            echo "{\"mode\":\"random\",\"token\":\"\",\"domain\":\"\"}" > "$ARGO_CONFIG_FILE"
+        fi
+    fi
+
     if [ -f "$CONFIG_FILE" ]; then PORT1_PROTOCOL=$(cat "$CONFIG_FILE"); else PORT1_PROTOCOL="$DEFAULT_PROTOCOL"; echo "$PORT1_PROTOCOL" > "$CONFIG_FILE"; fi
 
     log "[网络] 正在获取公网 IP..."
     PUBLIC_IP=$(curl -s --max-time 5 ipv4.ip.sb || curl -s --max-time 5 api.ipify.org || echo "")
-    if [ -z "$PUBLIC_IP" ]; then log "[错误] 无法获取 IP，5秒后重试..."; sleep 5; continue; fi
+    if [ -z "$PUBLIC_IP" ]; then log "[错误] 无法获取 IP,5秒后重试..."; sleep 5; continue; fi
     log "[网络] 公网 IP: $PUBLIC_IP"
 
     select_random_cf_domain() {
@@ -91,7 +101,7 @@ while true; do
     read -ra AVAILABLE_PORTS <<< "$PORTS_STRING"
     PORT_COUNT=${#AVAILABLE_PORTS[@]}
 
-    if [ $PORT_COUNT -eq 0 ]; then log "[错误] 未找到端口，重试..."; sleep 5; continue; fi
+    if [ $PORT_COUNT -eq 0 ]; then log "[错误] 未找到端口,重试..."; sleep 5; continue; fi
 
     PRIMARY_PORT=${AVAILABLE_PORTS[0]}
     HTTP_PORT=${AVAILABLE_PORTS[0]}
@@ -129,7 +139,6 @@ try {
     let users = [];
     try { users = JSON.parse(fs.readFileSync('${USERS_FILE}', 'utf8')); } catch(e) { users = []; }
 
-    // [关键] 过滤掉已过期的用户
     const now = Date.now();
     const activeUsers = users.filter(u => !u.expiry || u.expiry > now);
     const firstUserUUID = (activeUsers.length > 0) ? activeUsers[0].uuid : "00000000-0000-0000-0000-000000000000";
@@ -173,7 +182,7 @@ JSGEN
     # ================== Node.js 控制面板 ==================
     if [ -n "$HTTP_PORT" ]; then
 
-# 1. HTML 前端 (v7.5: 5列布局，紧凑优化)
+# 1. HTML 前端 (增强版)
 cat > "${FILE_PATH}/panel.html" <<HTMLEOF
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -199,6 +208,7 @@ cat > "${FILE_PATH}/panel.html" <<HTMLEOF
 
         input[type="text"] { background: #2d2d2d; border: 1px solid var(--border); color: white; padding: 8px; border-radius: 6px; width: 100%; box-sizing: border-box; }
         input[type="text"]:focus { border-color: var(--primary); }
+        input[type="text"]:disabled { background: #1a1a1a; color: #555; cursor: not-allowed; }
 
         .user-grid { display: grid; grid-template-columns: 1.5fr 2.5fr 2.5fr 1.5fr 0.8fr 2fr; gap: 10px; align-items: center; padding: 12px 0; border-bottom: 1px solid #2d2d2d; }
         .user-grid.header-row { font-size: 12px; color: var(--text-gray); text-transform: uppercase; border-bottom: 1px solid var(--border); padding-bottom: 8px; font-weight: bold; }
@@ -209,38 +219,28 @@ cat > "${FILE_PATH}/panel.html" <<HTMLEOF
         .uuid-box { font-family: monospace; font-size: 11px; background: #000; padding: 6px; border-radius: 4px; color: #a5f3fc; opacity: 0.9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .time-box { font-size: 12px; color: #ccc; margin-top: 3px; font-family: monospace; }
         
-        /* 模态框 */
         .modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); display: none; justify-content: center; align-items: center; z-index: 1000; backdrop-filter: blur(2px); }
         .modal { background: #252525; border-radius: 16px; width: 90%; max-width: 440px; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5); border: 1px solid var(--border); overflow: hidden; animation: popIn 0.3s ease-out; }
         @keyframes popIn { from { transform: scale(0.95); opacity: 0; } to { transform: scale(1); opacity: 1; } }
-        
         .modal-header { padding: 15px 20px; background: #2d2d2d; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); }
         .modal-body { padding: 20px; }
         .modal-footer { padding: 15px 20px; display: flex; justify-content: flex-end; gap: 10px; background: #2d2d2d; border-top: 1px solid var(--border); }
 
-        /* 滚动选择器 - 布局紧凑化优化 */
         .picker-wrapper { display: flex; justify-content: center; height: 180px; position: relative; margin: 10px 0; background: #1a1a1a; border-radius: 8px; overflow: hidden; gap: 2px; }
-        
         .picker-mask-top { position: absolute; top:0; left:0; width:100%; height:60px; background: linear-gradient(to bottom, rgba(26,26,26,0.95), rgba(26,26,26,0.5)); z-index: 10; pointer-events: none;}
         .picker-mask-bottom { position: absolute; bottom:0; left:0; width:100%; height:60px; background: linear-gradient(to top, rgba(26,26,26,0.95), rgba(26,26,26,0.5)); z-index: 10; pointer-events: none;}
         .picker-highlight { position: absolute; top: 70px; left: 0; right: 0; height: 40px; background: rgba(59, 130, 246, 0.15); border-top: 1px solid var(--primary); border-bottom: 1px solid var(--primary); pointer-events: none; z-index: 5; }
-
-        /* 列容器：限制宽度，实现紧凑效果 */
         .picker-col-container { flex: 1; max-width: 60px; display: flex; flex-direction: column; align-items: center; z-index: 20; position: relative; }
-        
-        .picker-btn-up, .picker-btn-down { 
-            width: 100%; height: 26px; display: flex; justify-content: center; align-items: center; cursor: pointer; color: #777; background: #222; z-index: 30; user-select: none; transition: 0.1s;
-        }
+        .picker-btn-up, .picker-btn-down { width: 100%; height: 26px; display: flex; justify-content: center; align-items: center; cursor: pointer; color: #777; background: #222; z-index: 30; user-select: none; transition: 0.1s; }
         .picker-btn-up:hover, .picker-btn-down:hover { background: #333; color: #fff; }
         .picker-btn-up svg, .picker-btn-down svg { width: 14px; height: 14px; fill: currentColor; }
-        
         .picker-col { width: 100%; height: 128px; overflow-y: scroll; scroll-snap-type: y mandatory; scrollbar-width: none; text-align: center; position: relative; cursor: grab; user-select: none; scroll-behavior: smooth; }
         .picker-col.is-dragging { scroll-behavior: auto; cursor: grabbing; scroll-snap-type: none; } 
         .picker-col::-webkit-scrollbar { display: none; }
         .picker-col ul { list-style: none; padding: 0; margin: 0; padding-top: 44px; padding-bottom: 44px; } 
         .picker-col li { height: 40px; line-height: 40px; scroll-snap-align: center; font-size: 16px; color: #888; transition: 0.2s; }
-        
         .col-label { font-size: 10px; color: var(--primary); margin: 5px 0; text-transform: uppercase; text-align: center; white-space: nowrap; }
+        
         .options-row { display: flex; gap: 20px; margin-bottom: 15px; justify-content: center; }
         .checkbox-label { display: flex; align-items: center; gap: 6px; font-size: 14px; cursor: pointer; user-select: none; }
         .checkbox-label input { accent-color: var(--primary); width: 16px; height: 16px; }
@@ -253,8 +253,9 @@ cat > "${FILE_PATH}/panel.html" <<HTMLEOF
     <div class="toast" id="toast"><span>✔</span> 操作成功</div>
 
     <div class="container">
+        <!-- 顶部系统状态 -->
         <div class="card">
-            <h2>🖥️ 系统状态 <span style="font-size:12px; font-weight:normal; color:#666;">v7.5</span></h2>
+            <h2>🖥️ 系统状态 <span style="font-size:12px; font-weight:normal; color:#666;">v7.6</span></h2>
             <div style="display: flex; gap: 15px; flex-wrap: wrap; font-size: 14px;">
                 <div style="background:#2d2d2d; padding:8px 12px; border-radius:6px;">
                     协议: <strong style="color:var(--primary)">${PROTOCOL_NAME}</strong>
@@ -269,6 +270,22 @@ cat > "${FILE_PATH}/panel.html" <<HTMLEOF
             </div>
         </div>
 
+        <!-- Argo 配置卡片 -->
+        <div class="card">
+            <h2>☁️ Argo 隧道配置</h2>
+            <div class="options-row" style="justify-content: flex-start; gap: 20px;">
+                <label class="checkbox-label"><input type="radio" name="argoMode" value="random" onchange="toggleArgoInputs()"> 随机域名 (免费)</label>
+                <label class="checkbox-label"><input type="radio" name="argoMode" value="fixed" onchange="toggleArgoInputs()"> 固定域名 (需Token)</label>
+            </div>
+            <div style="margin-top:15px; display:grid; gap:10px;">
+                <input type="text" id="argoToken" placeholder="Argo Token (eyAh......)" disabled>
+                <input type="text" id="argoDomain" placeholder="固定域名 (例: sub.example.com)" disabled>
+            </div>
+            <button class="btn btn-primary" style="margin-top:15px; width:100%" onclick="saveArgoConfig()">保存并重启服务</button>
+            <div style="font-size:12px; color:#666; margin-top:10px;">* 切换模式或修改配置后，服务将自动重启以生效。</div>
+        </div>
+
+        <!-- 用户管理卡片 -->
         <div class="card">
             <h2>
                 👥 用户管理
@@ -289,6 +306,7 @@ cat > "${FILE_PATH}/panel.html" <<HTMLEOF
         </div>
     </div>
 
+    <!-- 时间选择模态框 -->
     <div class="modal-overlay" id="timeModal">
         <div class="modal">
             <div class="modal-header">
@@ -304,52 +322,22 @@ cat > "${FILE_PATH}/panel.html" <<HTMLEOF
                 </div>
 
                 <div style="display:flex; justify-content:center; gap:2px;">
-                    <div style="flex:1; max-width:60px;"><div class="col-label">年 (0-10)</div></div>
-                    <div style="flex:1; max-width:60px;"><div class="col-label">月 (0-12)</div></div>
-                    <div style="flex:1; max-width:60px;"><div class="col-label">日 (0-30)</div></div>
-                    <div style="flex:1; max-width:60px;"><div class="col-label">时 (0-60)</div></div>
-                    <div style="flex:1; max-width:60px;"><div class="col-label">分 (0-60)</div></div>
+                    <div style="flex:1; max-width:60px;"><div class="col-label">年</div></div>
+                    <div style="flex:1; max-width:60px;"><div class="col-label">月</div></div>
+                    <div style="flex:1; max-width:60px;"><div class="col-label">日</div></div>
+                    <div style="flex:1; max-width:60px;"><div class="col-label">时</div></div>
+                    <div style="flex:1; max-width:60px;"><div class="col-label">分</div></div>
                 </div>
                 
                 <div class="picker-wrapper" id="pickerContainer">
-                    <div class="picker-mask-top"></div>
-                    <div class="picker-mask-bottom"></div>
-                    <div class="picker-highlight"></div>
-
-                    <svg style="display:none;">
-                        <symbol id="icon-minus" viewBox="0 0 24 24"><path d="M19 13H5v-2h14v2z"/></symbol>
-                        <symbol id="icon-plus" viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></symbol>
-                    </svg>
-
-                    <div class="picker-col-container">
-                        <div class="picker-btn-up" onclick="adjustPicker('col-year', -1)"><svg><use href="#icon-minus"></use></svg></div>
-                        <div class="picker-col" id="col-year"><ul></ul></div>
-                        <div class="picker-btn-down" onclick="adjustPicker('col-year', 1)"><svg><use href="#icon-plus"></use></svg></div>
-                    </div>
-
-                    <div class="picker-col-container">
-                        <div class="picker-btn-up" onclick="adjustPicker('col-month', -1)"><svg><use href="#icon-minus"></use></svg></div>
-                        <div class="picker-col" id="col-month"><ul></ul></div>
-                        <div class="picker-btn-down" onclick="adjustPicker('col-month', 1)"><svg><use href="#icon-plus"></use></svg></div>
-                    </div>
-
-                    <div class="picker-col-container">
-                        <div class="picker-btn-up" onclick="adjustPicker('col-day', -1)"><svg><use href="#icon-minus"></use></svg></div>
-                        <div class="picker-col" id="col-day"><ul></ul></div>
-                        <div class="picker-btn-down" onclick="adjustPicker('col-day', 1)"><svg><use href="#icon-plus"></use></svg></div>
-                    </div>
-
-                    <div class="picker-col-container">
-                        <div class="picker-btn-up" onclick="adjustPicker('col-hour', -1)"><svg><use href="#icon-minus"></use></svg></div>
-                        <div class="picker-col" id="col-hour"><ul></ul></div>
-                        <div class="picker-btn-down" onclick="adjustPicker('col-hour', 1)"><svg><use href="#icon-plus"></use></svg></div>
-                    </div>
-
-                    <div class="picker-col-container">
-                        <div class="picker-btn-up" onclick="adjustPicker('col-min', -1)"><svg><use href="#icon-minus"></use></svg></div>
-                        <div class="picker-col" id="col-min"><ul></ul></div>
-                        <div class="picker-btn-down" onclick="adjustPicker('col-min', 1)"><svg><use href="#icon-plus"></use></svg></div>
-                    </div>
+                    <div class="picker-mask-top"></div><div class="picker-mask-bottom"></div><div class="picker-highlight"></div>
+                    <svg style="display:none;"><symbol id="icon-minus" viewBox="0 0 24 24"><path d="M19 13H5v-2h14v2z"/></symbol><symbol id="icon-plus" viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></symbol></svg>
+                    <!-- Pickers -->
+                    <div class="picker-col-container"><div class="picker-btn-up" onclick="adjustPicker('col-year', -1)"><svg><use href="#icon-minus"></use></svg></div><div class="picker-col" id="col-year"><ul></ul></div><div class="picker-btn-down" onclick="adjustPicker('col-year', 1)"><svg><use href="#icon-plus"></use></svg></div></div>
+                    <div class="picker-col-container"><div class="picker-btn-up" onclick="adjustPicker('col-month', -1)"><svg><use href="#icon-minus"></use></svg></div><div class="picker-col" id="col-month"><ul></ul></div><div class="picker-btn-down" onclick="adjustPicker('col-month', 1)"><svg><use href="#icon-plus"></use></svg></div></div>
+                    <div class="picker-col-container"><div class="picker-btn-up" onclick="adjustPicker('col-day', -1)"><svg><use href="#icon-minus"></use></svg></div><div class="picker-col" id="col-day"><ul></ul></div><div class="picker-btn-down" onclick="adjustPicker('col-day', 1)"><svg><use href="#icon-plus"></use></svg></div></div>
+                    <div class="picker-col-container"><div class="picker-btn-up" onclick="adjustPicker('col-hour', -1)"><svg><use href="#icon-minus"></use></svg></div><div class="picker-col" id="col-hour"><ul></ul></div><div class="picker-btn-down" onclick="adjustPicker('col-hour', 1)"><svg><use href="#icon-plus"></use></svg></div></div>
+                    <div class="picker-col-container"><div class="picker-btn-up" onclick="adjustPicker('col-min', -1)"><svg><use href="#icon-minus"></use></svg></div><div class="picker-col" id="col-min"><ul></ul></div><div class="picker-btn-down" onclick="adjustPicker('col-min', 1)"><svg><use href="#icon-plus"></use></svg></div></div>
                 </div>
             </div>
             <div class="modal-footer">
@@ -362,20 +350,11 @@ cat > "${FILE_PATH}/panel.html" <<HTMLEOF
     <script>
         let users = [];
         let currentEditIdx = -1;
+        const limits = { year: 10, month: 12, day: 30, hour: 60, min: 60 };
 
-        function uuidv4() {
-            return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
-                const r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
-                return v.toString(16);
-            });
-        }
-
-        function showToast(msg) {
-            const t = document.getElementById('toast');
-            t.innerHTML = '<span>✔</span> ' + (msg || '操作成功');
-            t.classList.add('show');
-            setTimeout(() => t.classList.remove('show'), 2000);
-        }
+        function uuidv4() { return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8); return v.toString(16); }); }
+        function showToast(msg) { const t = document.getElementById('toast'); t.innerHTML = '<span>✔</span> ' + (msg || '操作成功'); t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2000); }
+        function pad(num) { return num.toString().padStart(2, '0'); }
 
         async function fetchUsers() {
             const res = await fetch('?action=get_users');
@@ -383,28 +362,66 @@ cat > "${FILE_PATH}/panel.html" <<HTMLEOF
             render();
         }
 
-        function pad(num) { return num.toString().padStart(2, '0'); }
+        async function fetchArgoConfig() {
+            try {
+                const res = await fetch('?action=get_argo');
+                const config = await res.json();
+                
+                if (config.mode === 'fixed') {
+                    document.querySelector('input[name="argoMode"][value="fixed"]').checked = true;
+                } else {
+                    document.querySelector('input[name="argoMode"][value="random"]').checked = true;
+                }
+                
+                document.getElementById('argoToken').value = config.token || '';
+                document.getElementById('argoDomain').value = config.domain || '';
+                toggleArgoInputs();
+            } catch(e) { console.error("Load Argo config failed", e); }
+        }
+
+        function toggleArgoInputs() {
+            const isFixed = document.querySelector('input[name="argoMode"][value="fixed"]').checked;
+            document.getElementById('argoToken').disabled = !isFixed;
+            document.getElementById('argoDomain').disabled = !isFixed;
+            
+            if(!isFixed) {
+                // 可选：切换回随机时，可以将输入框视觉上变暗，但保留值
+                document.getElementById('argoToken').style.opacity = '0.5';
+                document.getElementById('argoDomain').style.opacity = '0.5';
+            } else {
+                document.getElementById('argoToken').style.opacity = '1';
+                document.getElementById('argoDomain').style.opacity = '1';
+            }
+        }
+
+        async function saveArgoConfig() {
+            const mode = document.querySelector('input[name="argoMode"]:checked').value;
+            const token = document.getElementById('argoToken').value.trim();
+            const domain = document.getElementById('argoDomain').value.trim();
+
+            if (mode === 'fixed' && !token) { alert('请填写 Argo Token'); return; }
+
+            if(confirm('保存配置将重启服务，是否继续？')) {
+                await fetch('?action=save_argo&mode='+mode+'&token='+encodeURIComponent(token)+'&domain='+encodeURIComponent(domain));
+                alert('正在重启...');
+                setTimeout(()=>location.reload(), 3000);
+            }
+        }
 
         function formatFullDate(ts) {
             if (!ts) return "永久有效 ∞";
             const d = new Date(ts);
             return \`\${d.getFullYear()}-\${pad(d.getMonth()+1)}-\${pad(d.getDate())} \${pad(d.getHours())}:\${pad(d.getMinutes())}:\${pad(d.getSeconds())}\`;
         }
-
         function getRemainingStr(ts) {
             if (!ts) return "∞";
             const now = Date.now();
             if (ts < now) return "已过期";
-            
             let diff = ts - now;
-            const years = Math.floor(diff / (1000 * 60 * 60 * 24 * 365));
-            diff -= years * (1000 * 60 * 60 * 24 * 365);
-            const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-            diff -= days * (1000 * 60 * 60 * 24);
-            const hours = Math.floor(diff / (1000 * 60 * 60));
-            diff -= hours * (1000 * 60 * 60);
+            const years = Math.floor(diff / (1000 * 60 * 60 * 24 * 365)); diff -= years * 31536000000;
+            const days = Math.floor(diff / (1000 * 60 * 60 * 24)); diff -= days * 86400000;
+            const hours = Math.floor(diff / (1000 * 60 * 60)); diff -= hours * 3600000;
             const mins = Math.floor(diff / (1000 * 60));
-
             if (years > 0) return \`\${years}年 \${days}天\`;
             if (days > 0) return \`\${days}天 \${hours}小时\`;
             return \`\${hours}小时 \${mins}分\`;
@@ -414,260 +431,105 @@ cat > "${FILE_PATH}/panel.html" <<HTMLEOF
             const container = document.getElementById('userTableContainer');
             container.innerHTML = '';
             const now = Date.now();
-
             users.forEach((u, idx) => {
                 const isExpired = u.expiry && u.expiry < now;
                 const row = document.createElement('div');
                 row.className = 'user-grid';
                 row.style.opacity = isExpired ? '0.6' : '1';
-
                 const statusHtml = isExpired 
                     ? \`<span class="status-badge expired">无效</span> <div class="time-box">\${formatFullDate(u.expiry)}</div>\` 
                     : \`<span class="status-badge">有效</span> <div class="time-box">\${formatFullDate(u.expiry)}</div>\`;
-                
                 const remainingHtml = \`<div style="color:\${isExpired ? '#ef4444' : '#a5f3fc'}; font-size:13px; font-weight:bold;">\${getRemainingStr(u.expiry)}</div>\`;
-
                 row.innerHTML = \`
                     <div><input type="text" value="\${u.name}" onchange="updateUser(\${idx}, 'name', this.value)" style="padding:4px; font-size:13px;"></div>
                     <div class="uuid-box">\${u.uuid}</div>
                     <div>\${statusHtml}</div>
                     <div>\${remainingHtml}</div>
-                    <div>
-                        \${!isExpired ? \`<a href="/sub/\${u.uuid}" target="_blank" class="btn btn-primary" style="padding:2px 8px; font-size:11px; text-decoration:none;">订阅</a>\` : '<span style="font-size:11px; color:#666">--</span>'}
-                    </div>
+                    <div>\${!isExpired ? \`<a href="/sub/\${u.uuid}" target="_blank" class="btn btn-primary" style="padding:2px 8px; font-size:11px; text-decoration:none;">订阅</a>\` : '<span style="font-size:11px; color:#666">--</span>'}</div>
                     <div style="text-align:right; display:flex; gap:5px; justify-content:flex-end;">
-                        <button class="btn btn-primary" style="padding:4px 8px; font-size:11px;" onclick="openTimeModal(\${idx})">剩余时间</button>
+                        <button class="btn btn-primary" style="padding:4px 8px; font-size:11px;" onclick="openTimeModal(\${idx})">时间</button>
                         <button class="btn btn-danger" style="padding:4px 8px; font-size:11px;" onclick="delUser(\${idx})">删</button>
-                    </div>
-                \`;
+                    </div>\`;
                 container.appendChild(row);
             });
         }
 
-        // ============ Picker 逻辑 (5列支持) ============
-        const limits = { year: 10, month: 12, day: 30, hour: 60, min: 60 };
-        
+        /* 滚动选择器逻辑 */
         function initPickerCol(id, max) {
-            const ul = document.querySelector('#' + id + ' ul');
-            ul.innerHTML = '';
-            for(let i=0; i<=max; i++) {
-                const li = document.createElement('li');
-                li.innerText = pad(i);
-                ul.appendChild(li);
-            }
+            const ul = document.querySelector('#' + id + ' ul'); ul.innerHTML = '';
+            for(let i=0; i<=max; i++) { const li = document.createElement('li'); li.innerText = pad(i); ul.appendChild(li); }
             enableDrag(document.getElementById(id));
         }
-
         function enableDrag(ele) {
-            let isDown = false;
-            let startY;
-            let scrollTop;
-
-            ele.addEventListener('mousedown', (e) => {
-                isDown = true;
-                ele.classList.add('is-dragging'); 
-                startY = e.pageY - ele.offsetTop;
-                scrollTop = ele.scrollTop;
-            });
-            
-            const stopDrag = () => {
-                if(!isDown) return;
-                isDown = false;
-                ele.classList.remove('is-dragging'); 
-                snap(ele);
-            };
-
-            ele.addEventListener('mouseleave', stopDrag);
-            ele.addEventListener('mouseup', stopDrag);
-            ele.addEventListener('mousemove', (e) => {
-                if (!isDown) return;
-                e.preventDefault();
-                const y = e.pageY - ele.offsetTop;
-                const walk = (y - startY); 
-                ele.scrollTop = scrollTop - walk;
-            });
-            
-            let scrollTimeout;
-            ele.addEventListener('scroll', () => {
-                if(isDown) return; 
-                clearTimeout(scrollTimeout);
-                scrollTimeout = setTimeout(() => snap(ele), 100);
-            });
+            let isDown = false, startY, scrollTop;
+            ele.addEventListener('mousedown', (e) => { isDown = true; ele.classList.add('is-dragging'); startY = e.pageY - ele.offsetTop; scrollTop = ele.scrollTop; });
+            const stop = () => { if(!isDown) return; isDown = false; ele.classList.remove('is-dragging'); snap(ele); };
+            ele.addEventListener('mouseleave', stop); ele.addEventListener('mouseup', stop);
+            ele.addEventListener('mousemove', (e) => { if (!isDown) return; e.preventDefault(); const y = e.pageY - ele.offsetTop; ele.scrollTop = scrollTop - (y - startY); });
+            let t; ele.addEventListener('scroll', () => { if(isDown) return; clearTimeout(t); t = setTimeout(() => snap(ele), 100); });
         }
-
-        function snap(ele) {
-            const itemHeight = 40;
-            const current = ele.scrollTop;
-            const target = Math.round(current / itemHeight) * itemHeight;
-            ele.scrollTo({ top: target, behavior: 'smooth' });
-        }
-
-        function adjustPicker(id, dir) {
-            const ele = document.getElementById(id);
-            const itemHeight = 40;
-            const currentIdx = Math.round(ele.scrollTop / itemHeight);
-            const newIdx = currentIdx + dir;
-            if (newIdx >= 0) {
-                ele.scrollTo({ top: newIdx * itemHeight, behavior: 'smooth' });
-            }
-        }
-
-        function getPickerVal(id) {
-            const col = document.getElementById(id);
-            return Math.round(col.scrollTop / 40);
-        }
-
-        function setPickerVal(id, val) {
-            const col = document.getElementById(id);
-            col.scrollTop = val * 40;
-        }
-
+        function snap(ele) { const h = 40; ele.scrollTo({ top: Math.round(ele.scrollTop / h) * h, behavior: 'smooth' }); }
+        function adjustPicker(id, dir) { const ele = document.getElementById(id), h = 40; const n = Math.round(ele.scrollTop / h) + dir; if (n >= 0) ele.scrollTo({ top: n * h, behavior: 'smooth' }); }
+        function getPickerVal(id) { return Math.round(document.getElementById(id).scrollTop / 40); }
+        function setPickerVal(id, val) { document.getElementById(id).scrollTop = val * 40; }
         function togglePicker() {
-            const forever = document.getElementById('checkForever').checked;
-            const expired = document.getElementById('checkExpired').checked;
-            const container = document.getElementById('pickerContainer');
-            
-            if (forever || expired) {
-                container.style.opacity = '0.3';
-                container.style.pointerEvents = 'none';
-            } else {
-                container.style.opacity = '1';
-                container.style.pointerEvents = 'auto';
-            }
-            if(forever && expired) document.getElementById('checkExpired').checked = false; 
+            const dis = document.getElementById('checkForever').checked || document.getElementById('checkExpired').checked;
+            document.getElementById('pickerContainer').style.opacity = dis ? '0.3' : '1';
+            document.getElementById('pickerContainer').style.pointerEvents = dis ? 'none' : 'auto';
+            if(document.getElementById('checkForever').checked && document.getElementById('checkExpired').checked) document.getElementById('checkExpired').checked = false; 
         }
 
         function openTimeModal(idx) {
-            currentEditIdx = idx;
-            const u = users[idx];
+            currentEditIdx = idx; const u = users[idx];
             document.getElementById('targetUserDisplay').innerText = u.name;
             document.getElementById('timeModal').style.display = 'flex';
-            
-            const now = Date.now();
-            let remYear = 0, remMonth = 0, remDay = 0, remHour = 0, remMin = 0;
-            
-            document.getElementById('checkForever').checked = false;
-            document.getElementById('checkExpired').checked = false;
-
-            if (!u.expiry) {
-                document.getElementById('checkForever').checked = true;
-            } else if (u.expiry < now) {
-                document.getElementById('checkExpired').checked = true;
-            } else {
-                let diff = u.expiry - now;
-                const MS_MIN = 60000;
-                const MS_HOUR = 3600000;
-                const MS_DAY = 86400000;
-                const MS_MONTH = 2592000000; 
-                const MS_YEAR = 31536000000; // 365天
-
-                remYear = Math.floor(diff / MS_YEAR);
-                diff %= MS_YEAR;
-                remMonth = Math.floor(diff / MS_MONTH);
-                diff %= MS_MONTH;
-                remDay = Math.floor(diff / MS_DAY);
-                diff %= MS_DAY;
-                remHour = Math.floor(diff / MS_HOUR);
-                diff %= MS_HOUR;
-                remMin = Math.floor(diff / MS_MIN);
+            document.getElementById('checkForever').checked = !u.expiry;
+            document.getElementById('checkExpired').checked = u.expiry && u.expiry < Date.now();
+            let y=0,m=0,d=0,h=0,min=0;
+            if(u.expiry && u.expiry > Date.now()) {
+                let diff = u.expiry - Date.now();
+                y = Math.floor(diff/31536000000); diff%=31536000000;
+                m = Math.floor(diff/2592000000); diff%=2592000000;
+                d = Math.floor(diff/86400000); diff%=86400000;
+                h = Math.floor(diff/3600000); diff%=3600000;
+                min = Math.floor(diff/60000);
             }
-
-            remYear = Math.min(Math.max(0, remYear), limits.year);
-            remMonth = Math.min(Math.max(0, remMonth), limits.month);
-            remDay = Math.min(Math.max(0, remDay), limits.day);
-            remHour = Math.min(Math.max(0, remHour), limits.hour);
-            remMin = Math.min(Math.max(0, remMin), limits.min);
-
             togglePicker();
-            
-            setTimeout(() => {
-                setPickerVal('col-year', remYear);
-                setPickerVal('col-month', remMonth);
-                setPickerVal('col-day', remDay);
-                setPickerVal('col-hour', remHour);
-                setPickerVal('col-min', remMin);
-            }, 50);
+            setTimeout(() => { setPickerVal('col-year',Math.min(y,10)); setPickerVal('col-month',Math.min(m,12)); setPickerVal('col-day',Math.min(d,30)); setPickerVal('col-hour',Math.min(h,60)); setPickerVal('col-min',Math.min(min,60)); }, 50);
         }
-
         function closeModal() { document.getElementById('timeModal').style.display = 'none'; }
-
         function saveTime() {
             if (currentEditIdx === -1) return;
-            
             const forever = document.getElementById('checkForever').checked;
             const expired = document.getElementById('checkExpired').checked;
             let newExpiry = null;
-
-            if (expired) {
-                newExpiry = Date.now() - 1000; 
-            } else if (!forever) {
-                const y = getPickerVal('col-year');
-                const m = getPickerVal('col-month');
-                const d = getPickerVal('col-day');
-                const h = getPickerVal('col-hour');
-                const min = getPickerVal('col-min');
-                
-                const now = Date.now();
-                // 1年=365天, 1月=30天 (简化计算)
-                const addMs = (y * 31536000000) +
-                              (m * 2592000000) + 
-                              (d * 86400000) + 
-                              (h * 3600000) + 
-                              (min * 60000);
-                newExpiry = now + addMs;
+            if (expired) newExpiry = Date.now() - 1000;
+            else if (!forever) {
+                newExpiry = Date.now() + (getPickerVal('col-year')*31536000000) + (getPickerVal('col-month')*2592000000) + (getPickerVal('col-day')*86400000) + (getPickerVal('col-hour')*3600000) + (getPickerVal('col-min')*60000);
             }
-            
             updateUser(currentEditIdx, 'expiry', newExpiry);
             closeModal();
         }
 
-        async function addUser() {
-            await fetch(\`?action=manage_user&type=add&name=新用户&uuid=\${uuidv4()}&expiry=\${Date.now() + 30*24*3600*1000}\`);
-            fetchUsers();
-            showToast("用户已添加");
-        }
-
-        async function delUser(idx) {
-            if (!confirm('确定删除?')) return;
-            await fetch(\`?action=manage_user&type=del&uuid=\${users[idx].uuid}\`);
-            fetchUsers();
-        }
-
+        async function addUser() { await fetch(\`?action=manage_user&type=add&name=新用户&uuid=\${uuidv4()}&expiry=\${Date.now() + 2592000000}\`); fetchUsers(); showToast("用户已添加"); }
+        async function delUser(idx) { if (!confirm('确定删除?')) return; await fetch(\`?action=manage_user&type=del&uuid=\${users[idx].uuid}\`); fetchUsers(); }
         async function updateUser(idx, key, val) {
-            const u = users[idx];
-            let url = \`?action=manage_user&type=update&uuid=\${u.uuid}\`;
+            let url = \`?action=manage_user&type=update&uuid=\${users[idx].uuid}\`;
             if (key === 'name') url += \`&name=\${encodeURIComponent(val)}\`;
             if (key === 'expiry') url += \`&expiry=\${val === null ? 'null' : val}\`;
-            
-            await fetch(url);
-            fetchUsers();
-            if (key === 'expiry') showToast("时间已更新");
+            await fetch(url); fetchUsers(); if(key === 'expiry') showToast("时间已更新");
         }
+        function switchProto(p) { if(confirm('需要重启服务,确定切换?')) { fetch('?action=switch_proto&proto='+p); alert('正在重启...'); setTimeout(()=>location.reload(), 3000); } }
 
-        function switchProto(p) {
-            if(confirm('需要重启服务，确定切换?')) {
-                fetch('?action=switch_proto&proto='+p);
-                alert('正在重启...');
-                setTimeout(()=>location.reload(), 3000);
-            }
-        }
-
-        function initPickers() {
-            initPickerCol('col-year', limits.year);
-            initPickerCol('col-month', limits.month);
-            initPickerCol('col-day', limits.day);
-            initPickerCol('col-hour', limits.hour);
-            initPickerCol('col-min', limits.min);
-        }
-
-        initPickers();
+        initPickerCol('col-year', 10); initPickerCol('col-month', 12); initPickerCol('col-day', 30); initPickerCol('col-hour', 60); initPickerCol('col-min', 60);
         fetchUsers();
+        fetchArgoConfig();
     </script>
 </body>
 </html>
 HTMLEOF
 
-# 2. Server.js (逻辑部分)
+# 2. Server.js (后端逻辑: 新增 Argo 配置读写)
 cat > "${FILE_PATH}/server.js" <<JSEOF
 const http = require('http');
 const fs = require('fs');
@@ -676,6 +538,7 @@ const bind = process.argv[3] || '0.0.0.0';
 const sb_pid = process.argv[4];
 const configFile = '${CONFIG_FILE}';
 const usersFile = '${USERS_FILE}';
+const argoConfigFile = '${ARGO_CONFIG_FILE}';
 const panelKey = '${PANEL_KEY}';
 const publicIp = '${PUBLIC_IP}';
 const tuicPort = '${TUIC_PORT}' ? parseInt('${TUIC_PORT}') : 0;
@@ -691,12 +554,13 @@ let lastActiveFingerprint = '';
 function getUsers() { try { const data = fs.readFileSync(usersFile, 'utf8'); return data ? JSON.parse(data) : []; } catch(e) { return []; } }
 function saveUsers(users) { fs.writeFileSync(usersFile, JSON.stringify(users)); }
 
+function getArgoConfig() { try { const data = fs.readFileSync(argoConfigFile, 'utf8'); return data ? JSON.parse(data) : {mode:'random'}; } catch(e) { return {mode:'random'}; } }
+
 function updateConfigAndReload() {
     const users = getUsers();
     const now = Date.now();
     const activeUsers = users.filter(u => !u.expiry || u.expiry > now);
     const firstUserUUID = (activeUsers.length > 0) ? activeUsers[0].uuid : "00000000-0000-0000-0000-000000000000";
-    
     lastActiveFingerprint = activeUsers.map(u => u.uuid).sort().join('|');
 
     const tuicUsers = activeUsers.map(u => ({ uuid: u.uuid, password: "admin" }));
@@ -711,7 +575,6 @@ function updateConfigAndReload() {
     inbounds.push({ type: "vless", tag: "vless-argo-in", listen: "127.0.0.1", listen_port: argoPort, users: vlessUsers, transport: { type: "ws", path: "/vless-argo" } });
 
     const config = { log: { level: "warn", timestamp: true }, inbounds: inbounds, outbounds: [{ type: "direct", tag: "direct" }] };
-    
     fs.writeFileSync('${FILE_PATH}/config.json', JSON.stringify(config));
     if (sb_pid) { try { process.kill(sb_pid, 'SIGHUP'); console.log('[System] Config Reloaded'); } catch(e) {} }
 }
@@ -721,21 +584,25 @@ setInterval(() => {
     const now = Date.now();
     const activeUsers = users.filter(u => !u.expiry || u.expiry > now);
     const currentFingerprint = activeUsers.map(u => u.uuid).sort().join('|');
-
-    if (currentFingerprint !== lastActiveFingerprint) {
-        console.log('[Auto-Expiry] 检测到用户过期，正在刷新节点配置...');
-        updateConfigAndReload();
-    }
+    if (currentFingerprint !== lastActiveFingerprint) updateConfigAndReload();
 }, 30000);
-
 updateConfigAndReload();
 
-function generateSub(uuid, argoDomain) {
+function generateSub(uuid) {
     let content = '';
     const users = getUsers();
     const user = users.find(u => u.uuid === uuid);
     if (!user) return "Error: User not found";
     if (user.expiry && user.expiry < Date.now()) return "Error: Subscription Expired (您的订阅已过期)";
+
+    // 获取 Argo 域名 (优先固定，其次随机)
+    let argoDomain = '';
+    const argoConfig = getArgoConfig();
+    if (argoConfig.mode === 'fixed' && argoConfig.domain) {
+        argoDomain = argoConfig.domain;
+    } else {
+        try { const log = fs.readFileSync('${FILE_PATH}/argo.log', 'utf8'); const match = log.match(/https:\/\/[a-zA-Z0-9-]+\.trycloudflare\.com/); if (match) argoDomain = match[0].replace('https://', ''); } catch(e) {}
+    }
 
     const remarks = user.name;
     if (tuicPort) content += \`tuic://\${uuid}:admin@\${publicIp}:\${tuicPort}?sni=www.bing.com&alpn=h3&congestion_control=bbr&allowInsecure=1#TUIC-\${encodeURIComponent(remarks)}\\n\`;
@@ -751,49 +618,40 @@ http.createServer((req, res) => {
     const url = new URL(req.url, 'http://localhost');
     const params = url.searchParams;
 
-    if (isPanel && params.get('action') === 'manage_user') {
-        const type = params.get('type');
-        let users = getUsers();
-        
-        if (type === 'add') {
-            const expiry = params.get('expiry') === 'null' ? null : parseInt(params.get('expiry'));
-            users.push({ name: params.get('name'), uuid: params.get('uuid'), expiry: expiry });
-        }
-        else if (type === 'del') {
-            users = users.filter(u => u.uuid !== params.get('uuid'));
-        }
-        else if (type === 'update') {
-            const u = users.find(u => u.uuid === params.get('uuid'));
-            if(u) {
-                if(params.has('name')) u.name = params.get('name');
-                if(params.has('expiry')) {
-                    const e = params.get('expiry');
-                    u.expiry = (e === 'null' || e === '') ? null : parseInt(e);
+    if (isPanel) {
+        if (params.get('action') === 'manage_user') {
+            const type = params.get('type');
+            let users = getUsers();
+            if (type === 'add') users.push({ name: params.get('name'), uuid: params.get('uuid'), expiry: params.get('expiry') === 'null' ? null : parseInt(params.get('expiry')) });
+            else if (type === 'del') users = users.filter(u => u.uuid !== params.get('uuid'));
+            else if (type === 'update') {
+                const u = users.find(u => u.uuid === params.get('uuid'));
+                if(u) {
+                    if(params.has('name')) u.name = params.get('name');
+                    if(params.has('expiry')) u.expiry = (params.get('expiry') === 'null' || params.get('expiry') === '') ? null : parseInt(params.get('expiry'));
                 }
             }
+            saveUsers(users); updateConfigAndReload(); res.end('ok'); return;
         }
+        if (params.get('action') === 'get_users') { res.writeHead(200, {'Content-Type': 'application/json'}); res.end(JSON.stringify(getUsers())); return; }
         
-        saveUsers(users);
-        updateConfigAndReload(); 
-        res.end('ok');
-        return;
-    }
+        // Argo Config API
+        if (params.get('action') === 'get_argo') { res.writeHead(200, {'Content-Type': 'application/json'}); res.end(JSON.stringify(getArgoConfig())); return; }
+        if (params.get('action') === 'save_argo') {
+            const newConfig = { mode: params.get('mode'), token: params.get('token'), domain: params.get('domain') };
+            fs.writeFileSync(argoConfigFile, JSON.stringify(newConfig));
+            fs.writeFileSync('${FILE_PATH}/.restart_flag', 'true');
+            if (sb_pid) try { process.kill(sb_pid, 'SIGTERM'); } catch(e) {} // Trigger restart
+            res.end('ok'); return;
+        }
 
-    if (isPanel && params.get('action') === 'get_users') { 
-        res.writeHead(200, {'Content-Type': 'application/json'}); 
-        res.end(JSON.stringify(getUsers())); 
-        return; 
-    }
-    
-    if (isPanel && params.get('action') === 'switch_proto') {
-        fs.writeFileSync(configFile, params.get('proto'));
-        fs.writeFileSync('${FILE_PATH}/.restart_flag', 'true');
-        if (sb_pid) try { process.kill(sb_pid, 'SIGTERM'); } catch(e) {}
-        res.end('ok');
-        return;
-    }
+        if (params.get('action') === 'switch_proto') {
+            fs.writeFileSync(configFile, params.get('proto'));
+            fs.writeFileSync('${FILE_PATH}/.restart_flag', 'true');
+            if (sb_pid) try { process.kill(sb_pid, 'SIGTERM'); } catch(e) {}
+            res.end('ok'); return;
+        }
 
-    if (isPanel) { 
         res.writeHead(200, {'Content-Type': 'text/html; charset=utf-8'}); 
         try { res.end(fs.readFileSync('${FILE_PATH}/panel.html', 'utf8')); } catch(e) { res.end('Error'); } 
         return; 
@@ -803,10 +661,8 @@ http.createServer((req, res) => {
         const uuid = req.url.split('/sub/')[1];
         const userExists = getUsers().some(u => u.uuid === uuid);
         if (userExists) {
-            let argoDomain = '';
-            try { const log = fs.readFileSync('${FILE_PATH}/argo.log', 'utf8'); const match = log.match(/https:\/\/[a-zA-Z0-9-]+\.trycloudflare\.com/); if (match) argoDomain = match[0].replace('https://', ''); } catch(e) {}
             res.writeHead(200, {'Content-Type': 'text/plain; charset=utf-8'});
-            res.end(generateSub(uuid, argoDomain));
+            res.end(generateSub(uuid));
         } else { res.writeHead(404); res.end('User not found'); }
         return;
     }
@@ -817,13 +673,22 @@ JSEOF
         HTTP_PID=$!
     fi
 
-    # ================== 启动 Argo ==================
+    # ================== 启动 Argo (动态模式) ==================
     ARGO_LOG="${FILE_PATH}/argo.log"
-    log "[Argo] 启动隧道..."
-    if [ -n "$ARGO_TOKEN" ]; then
-         "$ARGO_FILE" tunnel --edge-ip-version auto --protocol http2 --no-autoupdate run --token "$ARGO_TOKEN" > "$ARGO_LOG" 2>&1 &
+    
+    # 使用 Node.js 解析 JSON 配置到 Shell 变量
+    if [ -f "$ARGO_CONFIG_FILE" ]; then
+        eval $(node -e "try { const c = require('${PWD}/${ARGO_CONFIG_FILE}'); console.log('RUN_MODE='+c.mode); console.log('RUN_TOKEN='+c.token); } catch(e) {}")
+    fi
+
+    log "[Argo] 正在启动隧道 (模式: ${RUN_MODE:-random})..."
+    
+    if [ "$RUN_MODE" == "fixed" ] && [ -n "$RUN_TOKEN" ]; then
+        # 固定域名模式 (使用 Token)
+        "$ARGO_FILE" tunnel --edge-ip-version auto --protocol http2 --no-autoupdate run --token "$RUN_TOKEN" > "$ARGO_LOG" 2>&1 &
     else
-         "$ARGO_FILE" tunnel --edge-ip-version auto --protocol http2 --no-autoupdate --url http://127.0.0.1:${ARGO_PORT} > "$ARGO_LOG" 2>&1 &
+        # 随机域名模式 (免费 trycloudflare)
+        "$ARGO_FILE" tunnel --edge-ip-version auto --protocol http2 --no-autoupdate --url http://127.0.0.1:${ARGO_PORT} > "$ARGO_LOG" 2>&1 &
     fi
     ARGO_PID=$!
     
@@ -840,12 +705,12 @@ JSEOF
     [ -n "$ARGO_PID" ] && kill -9 "$ARGO_PID" 2>/dev/null
     
     if [ -f "${FILE_PATH}/.restart_flag" ]; then
-        log "♻️ 协议切换，正在重启..."
+        log "♻️ 配置变更,正在重启服务..."
         rm -f "${FILE_PATH}/.restart_flag"
         sleep 1
         continue 
     else
-        log "⚠️ 意外崩溃，5秒后重启..."
+        log "⚠️ 意外崩溃,5秒后重启..."
         sleep 5
     fi
 done
