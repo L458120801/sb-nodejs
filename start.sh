@@ -10,7 +10,7 @@ MANUAL_SECOND_PORT="24890"
 # [配置] 控制面板密钥 
 CUSTOM_SUB_SECRET="hello"
 
-# [默认] Argo Token (初始值，后续由面板控制)
+# [默认] Argo Token (初始值,后续由面板控制)
 ARGO_TOKEN=""
 
 # ================== 核心循环逻辑 ==================
@@ -19,32 +19,22 @@ CONFIG_FILE="saved_config.txt"
 USERS_FILE="users.json"
 ARGO_CONFIG_FILE="argo_config.json"
 
-# 脚本自身日志颜色保持
 log() {
     echo -e "\033[36m[$(date '+%Y-%m-%d %H:%M:%S')]\033[0m $1"
 }
 
-# [修改] 兼容性清理函数 (不依赖 pkill)
+# [系统] 进程清理
 cleanup() {
     log "[系统] 正在清理进程..."
-    
-    # 1. 优先尝试杀死记录的 PID
     [ -n "$SB_PID" ] && kill -9 "$SB_PID" 2>/dev/null
     [ -n "$HTTP_PID" ] && kill -9 "$HTTP_PID" 2>/dev/null
     [ -n "$ARGO_PID" ] && kill -9 "$ARGO_PID" 2>/dev/null
     
-    # 2. 兜底清理:使用 ps 查找残留的 sb 进程
     PIDS=$(ps -ef 2>/dev/null | grep "${FILE_PATH}/sb" | grep -v grep | awk '{print $2}' 2>/dev/null)
     if [ -z "$PIDS" ]; then
         PIDS=$(ps 2>/dev/null | grep "${FILE_PATH}/sb" | grep -v grep | awk '{print $1}' 2>/dev/null)
     fi
-    
-    for pid in $PIDS; do
-        if [ "$pid" != "$$" ]; then # 防止误杀自己
-            kill -9 "$pid" 2>/dev/null
-        fi
-    done
-    
+    for pid in $PIDS; do if [ "$pid" != "$$" ]; then kill -9 "$pid" 2>/dev/null; fi; done
     rm -f "$FILE_PATH/.restart_flag"
 }
 
@@ -53,12 +43,25 @@ trap "cleanup; exit 0" SIGTERM SIGINT
 while true; do
     echo ""
     echo "==================================================="
-    echo "   🚀 正在启动服务 (v7.6 Argo Pro版) ..."
+    echo "   🚀 正在启动服务 (v8.3 Latency MS)"
     echo "==================================================="
     echo ""
 
     # ================== 准备工作 ==================
-    CF_DOMAINS=("cf.090227.xyz" "cf.877774.xyz" "cf.130519.xyz" "cf.008500.xyz" "store.ubi.com" "saas.sin.fan")
+    CF_DOMAINS=(  
+        "cdn.2020111.xyz"  
+        "cloudflare.czkcdn.cn"  
+        "cloudflare.182682.xyz"  
+        "cdn.9889888.xyz"  
+        "cf.cdn.saas.fis.ink"  
+        "cfyx.tencentapp.cn"  
+        "www.cnae.top"  
+        "cf.090227.xyz"  
+        "cf.877774.xyz"  
+        "cf.130519.xyz"  
+        "cf.008500.xyz"  
+        "saas.sin.fan"  
+    )
     
     cd "$(dirname "$0")"
     export FILE_PATH="${PWD}/.npm"
@@ -72,7 +75,7 @@ while true; do
         log "[初始化] 已创建默认用户文件: $USERS_FILE"
     fi
 
-    # 初始化 Argo 配置文件 (如果不存在)
+    # 初始化 Argo 配置文件
     if [ ! -f "$ARGO_CONFIG_FILE" ]; then
         if [ -n "$ARGO_TOKEN" ]; then
             echo "{\"mode\":\"fixed\",\"token\":\"$ARGO_TOKEN\",\"domain\":\"\"}" > "$ARGO_CONFIG_FILE"
@@ -88,12 +91,58 @@ while true; do
     if [ -z "$PUBLIC_IP" ]; then log "[错误] 无法获取 IP,5秒后重试..."; sleep 5; continue; fi
     log "[网络] 公网 IP: $PUBLIC_IP"
 
-    select_random_cf_domain() {
-        local available=()
-        for domain in "${CF_DOMAINS[@]}"; do if curl -s --max-time 2 -o /dev/null "https://$domain" 2>/dev/null; then available+=("$domain"); fi; done
-        [ ${#available[@]} -gt 0 ] && echo "${available[$((RANDOM % ${#available[@]}))]}" || echo "${CF_DOMAINS[0]}"
+    # [核心升级] 5次平均测速 + 毫秒级 Top 3 输出
+    select_best_cf_domain() {
+        local res_file="${FILE_PATH}/cf_latency.res"
+        : > "$res_file"
+        
+        # 并发测试所有域名
+        for domain in "${CF_DOMAINS[@]}"; do
+            (
+                total_time=0
+                success_count=0
+                
+                # [修改] 连续测速 5 次
+                for i in {1..5}; do
+                    # connect-timeout 1.2s
+                    t=$(curl -s -w "%{time_connect}" -o /dev/null --connect-timeout 1.2 "https://$domain" 2>/dev/null)
+                    
+                    if [[ "$t" =~ ^[0-9]+(\.[0-9]+)?$ ]] && [ "$t" != "0.000000" ]; then
+                        total_time=$(awk "BEGIN {print $total_time + $t}")
+                        success_count=$((success_count + 1))
+                    fi
+                    
+                    # 间隔 0.5 秒
+                    sleep 0.5
+                done
+                
+                # 至少成功1次才计算
+                if [ "$success_count" -gt 0 ]; then
+                    avg_time=$(awk "BEGIN {print $total_time / $success_count}")
+                    echo "$avg_time $domain" >> "$res_file"
+                fi
+            ) &
+        done
+        wait
+        
+        # [修改] 输出 Top 3 到 stderr，格式转换为 ms
+        if [ -s "$res_file" ]; then
+            echo -e "\n🏆 优选测速 Top 3 (平均延迟):" >&2
+            # 使用 awk 将秒转换为毫秒并格式化输出
+            sort -n "$res_file" | head -n 3 | awk '{printf "   [%s----%.2fms]\n", $2, $1*1000}' >&2
+            echo "" >&2
+        fi
+        
+        # 排序取第一名返回给变量
+        local best=$(sort -n "$res_file" 2>/dev/null | head -n 1 | awk '{print $2}')
+        rm -f "$res_file"
+        
+        if [ -n "$best" ]; then echo "$best"; else echo "${CF_DOMAINS[0]}"; fi
     }
-    BEST_CF_DOMAIN=$(select_random_cf_domain)
+    
+    log "[网络] 正在进行高精度测速 (Sample: 5x, Interval: 0.5s)..."
+    BEST_CF_DOMAIN=$(select_best_cf_domain)
+    log "[网络] 最终选择: $BEST_CF_DOMAIN"
 
     # 端口处理
     [ -n "$SERVER_PORT" ] && PORTS_STRING="$SERVER_PORT" || PORTS_STRING=""
@@ -109,7 +158,6 @@ while true; do
     if [ "$PORT1_PROTOCOL" == "tuic" ]; then TUIC_PORT=$PRIMARY_PORT; HY2_PORT=""; PROTOCOL_NAME="TUIC"; else HY2_PORT=$PRIMARY_PORT; TUIC_PORT=""; PROTOCOL_NAME="Hysteria2"; fi
     if [ $PORT_COUNT -eq 1 ]; then SS_PORT=""; else SS_PORT=${AVAILABLE_PORTS[1]}; fi
     ARGO_PORT=8081
-    if [ -n "$SS_PORT" ]; then SS_DISPLAY="$SS_PORT"; else SS_DISPLAY="未开启"; fi
 
     if [ -n "$CUSTOM_SUB_SECRET" ]; then PANEL_KEY="$CUSTOM_SUB_SECRET"; else PANEL_KEY="admin"; fi
     PANEL_URL="http://${PUBLIC_IP}:${HTTP_PORT}/panel/${PANEL_KEY}"
@@ -182,7 +230,7 @@ JSGEN
     # ================== Node.js 控制面板 ==================
     if [ -n "$HTTP_PORT" ]; then
 
-# 1. HTML 前端 (增强版)
+# 1. HTML 前端
 cat > "${FILE_PATH}/panel.html" <<HTMLEOF
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -236,7 +284,6 @@ cat > "${FILE_PATH}/panel.html" <<HTMLEOF
         .picker-btn-up svg, .picker-btn-down svg { width: 14px; height: 14px; fill: currentColor; }
         .picker-col { width: 100%; height: 128px; overflow-y: scroll; scroll-snap-type: y mandatory; scrollbar-width: none; text-align: center; position: relative; cursor: grab; user-select: none; scroll-behavior: smooth; }
         .picker-col.is-dragging { scroll-behavior: auto; cursor: grabbing; scroll-snap-type: none; } 
-        .picker-col::-webkit-scrollbar { display: none; }
         .picker-col ul { list-style: none; padding: 0; margin: 0; padding-top: 44px; padding-bottom: 44px; } 
         .picker-col li { height: 40px; line-height: 40px; scroll-snap-align: center; font-size: 16px; color: #888; transition: 0.2s; }
         .col-label { font-size: 10px; color: var(--primary); margin: 5px 0; text-transform: uppercase; text-align: center; white-space: nowrap; }
@@ -255,7 +302,7 @@ cat > "${FILE_PATH}/panel.html" <<HTMLEOF
     <div class="container">
         <!-- 顶部系统状态 -->
         <div class="card">
-            <h2>🖥️ 系统状态 <span style="font-size:12px; font-weight:normal; color:#666;">v7.6</span></h2>
+            <h2>🖥️ 系统状态 <span style="font-size:12px; font-weight:normal; color:#666;">v8.3</span></h2>
             <div style="display: flex; gap: 15px; flex-wrap: wrap; font-size: 14px;">
                 <div style="background:#2d2d2d; padding:8px 12px; border-radius:6px;">
                     协议: <strong style="color:var(--primary)">${PROTOCOL_NAME}</strong>
@@ -282,7 +329,7 @@ cat > "${FILE_PATH}/panel.html" <<HTMLEOF
                 <input type="text" id="argoDomain" placeholder="固定域名 (例: sub.example.com)" disabled>
             </div>
             <button class="btn btn-primary" style="margin-top:15px; width:100%" onclick="saveArgoConfig()">保存并重启服务</button>
-            <div style="font-size:12px; color:#666; margin-top:10px;">* 切换模式或修改配置后，服务将自动重启以生效。</div>
+            <div style="font-size:12px; color:#666; margin-top:10px;">* 切换模式或修改配置后,服务将自动重启以生效。</div>
         </div>
 
         <!-- 用户管理卡片 -->
@@ -332,7 +379,6 @@ cat > "${FILE_PATH}/panel.html" <<HTMLEOF
                 <div class="picker-wrapper" id="pickerContainer">
                     <div class="picker-mask-top"></div><div class="picker-mask-bottom"></div><div class="picker-highlight"></div>
                     <svg style="display:none;"><symbol id="icon-minus" viewBox="0 0 24 24"><path d="M19 13H5v-2h14v2z"/></symbol><symbol id="icon-plus" viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></symbol></svg>
-                    <!-- Pickers -->
                     <div class="picker-col-container"><div class="picker-btn-up" onclick="adjustPicker('col-year', -1)"><svg><use href="#icon-minus"></use></svg></div><div class="picker-col" id="col-year"><ul></ul></div><div class="picker-btn-down" onclick="adjustPicker('col-year', 1)"><svg><use href="#icon-plus"></use></svg></div></div>
                     <div class="picker-col-container"><div class="picker-btn-up" onclick="adjustPicker('col-month', -1)"><svg><use href="#icon-minus"></use></svg></div><div class="picker-col" id="col-month"><ul></ul></div><div class="picker-btn-down" onclick="adjustPicker('col-month', 1)"><svg><use href="#icon-plus"></use></svg></div></div>
                     <div class="picker-col-container"><div class="picker-btn-up" onclick="adjustPicker('col-day', -1)"><svg><use href="#icon-minus"></use></svg></div><div class="picker-col" id="col-day"><ul></ul></div><div class="picker-btn-down" onclick="adjustPicker('col-day', 1)"><svg><use href="#icon-plus"></use></svg></div></div>
@@ -385,7 +431,6 @@ cat > "${FILE_PATH}/panel.html" <<HTMLEOF
             document.getElementById('argoDomain').disabled = !isFixed;
             
             if(!isFixed) {
-                // 可选：切换回随机时，可以将输入框视觉上变暗，但保留值
                 document.getElementById('argoToken').style.opacity = '0.5';
                 document.getElementById('argoDomain').style.opacity = '0.5';
             } else {
@@ -401,7 +446,7 @@ cat > "${FILE_PATH}/panel.html" <<HTMLEOF
 
             if (mode === 'fixed' && !token) { alert('请填写 Argo Token'); return; }
 
-            if(confirm('保存配置将重启服务，是否继续？')) {
+            if(confirm('保存配置将重启服务,是否继续?')) {
                 await fetch('?action=save_argo&mode='+mode+'&token='+encodeURIComponent(token)+'&domain='+encodeURIComponent(domain));
                 alert('正在重启...');
                 setTimeout(()=>location.reload(), 3000);
@@ -529,7 +574,7 @@ cat > "${FILE_PATH}/panel.html" <<HTMLEOF
 </html>
 HTMLEOF
 
-# 2. Server.js (后端逻辑: 新增 Argo 配置读写)
+# 2. Server.js (后端逻辑: 生成订阅)
 cat > "${FILE_PATH}/server.js" <<JSEOF
 const http = require('http');
 const fs = require('fs');
@@ -595,7 +640,7 @@ function generateSub(uuid) {
     if (!user) return "Error: User not found";
     if (user.expiry && user.expiry < Date.now()) return "Error: Subscription Expired (您的订阅已过期)";
 
-    // 获取 Argo 域名 (优先固定，其次随机)
+    // 获取 Argo 域名
     let argoDomain = '';
     const argoConfig = getArgoConfig();
     if (argoConfig.mode === 'fixed' && argoConfig.domain) {
@@ -608,7 +653,11 @@ function generateSub(uuid) {
     if (tuicPort) content += \`tuic://\${uuid}:admin@\${publicIp}:\${tuicPort}?sni=www.bing.com&alpn=h3&congestion_control=bbr&allowInsecure=1#TUIC-\${encodeURIComponent(remarks)}\\n\`;
     if (hy2Port) content += \`hysteria2://\${uuid}@\${publicIp}:\${hy2Port}/?sni=www.bing.com&insecure=1#Hy2-\${encodeURIComponent(remarks)}\\n\`;
     if (ssPort) { let ssBase64 = Buffer.from(\`aes-256-gcm:\${uuid}\`).toString('base64'); content += \`ss://\${ssBase64}@\${publicIp}:\${ssPort}#SS-\${encodeURIComponent(remarks)}\\n\`; }
-    if (argoDomain) content += \`vless://\${uuid}@\${bestCf}:443?encryption=none&security=tls&sni=\${argoDomain}&type=ws&host=\${argoDomain}&path=%2Fvless-argo#Argo-\${encodeURIComponent(remarks)}\\n\`;
+    
+    // [强制优选] 使用 bestCf 进行物理连接，argoDomain 仅用于 Host/SNI
+    if (argoDomain) {
+        content += \`vless://\${uuid}@\${bestCf}:443?encryption=none&security=tls&sni=\${argoDomain}&type=ws&host=\${argoDomain}&path=%2Fvless-argo#Argo-\${encodeURIComponent(remarks)}\\n\`;
+    }
     return content;
 }
 
@@ -635,13 +684,12 @@ http.createServer((req, res) => {
         }
         if (params.get('action') === 'get_users') { res.writeHead(200, {'Content-Type': 'application/json'}); res.end(JSON.stringify(getUsers())); return; }
         
-        // Argo Config API
         if (params.get('action') === 'get_argo') { res.writeHead(200, {'Content-Type': 'application/json'}); res.end(JSON.stringify(getArgoConfig())); return; }
         if (params.get('action') === 'save_argo') {
             const newConfig = { mode: params.get('mode'), token: params.get('token'), domain: params.get('domain') };
             fs.writeFileSync(argoConfigFile, JSON.stringify(newConfig));
             fs.writeFileSync('${FILE_PATH}/.restart_flag', 'true');
-            if (sb_pid) try { process.kill(sb_pid, 'SIGTERM'); } catch(e) {} // Trigger restart
+            if (sb_pid) try { process.kill(sb_pid, 'SIGTERM'); } catch(e) {}
             res.end('ok'); return;
         }
 
@@ -673,10 +721,8 @@ JSEOF
         HTTP_PID=$!
     fi
 
-    # ================== 启动 Argo (动态模式) ==================
+    # ================== 启动 Argo ==================
     ARGO_LOG="${FILE_PATH}/argo.log"
-    
-    # 使用 Node.js 解析 JSON 配置到 Shell 变量
     if [ -f "$ARGO_CONFIG_FILE" ]; then
         eval $(node -e "try { const c = require('${PWD}/${ARGO_CONFIG_FILE}'); console.log('RUN_MODE='+c.mode); console.log('RUN_TOKEN='+c.token); } catch(e) {}")
     fi
@@ -684,10 +730,8 @@ JSEOF
     log "[Argo] 正在启动隧道 (模式: ${RUN_MODE:-random})..."
     
     if [ "$RUN_MODE" == "fixed" ] && [ -n "$RUN_TOKEN" ]; then
-        # 固定域名模式 (使用 Token)
         "$ARGO_FILE" tunnel --edge-ip-version auto --protocol http2 --no-autoupdate run --token "$RUN_TOKEN" > "$ARGO_LOG" 2>&1 &
     else
-        # 随机域名模式 (免费 trycloudflare)
         "$ARGO_FILE" tunnel --edge-ip-version auto --protocol http2 --no-autoupdate --url http://127.0.0.1:${ARGO_PORT} > "$ARGO_LOG" 2>&1 &
     fi
     ARGO_PID=$!
