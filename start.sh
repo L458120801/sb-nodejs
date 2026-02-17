@@ -162,14 +162,55 @@ while true; do
     if [ -n "$CUSTOM_SUB_SECRET" ]; then PANEL_KEY="$CUSTOM_SUB_SECRET"; else PANEL_KEY="admin"; fi
     PANEL_URL="http://${PUBLIC_IP}:${HTTP_PORT}/panel/${PANEL_KEY}"
 
-    # 下载核心
+    # 下载核心（使用官方 Releases）
     ARCH=$(uname -m)
-    [[ "$ARCH" == "aarch64" ]] && BASE_URL="https://arm64.ssss.nyc.mn" || BASE_URL="https://amd64.ssss.nyc.mn"
-    [[ "$ARCH" == "aarch64" ]] && ARGO_ARCH="arm64" || ARGO_ARCH="amd64"
-    SB_FILE="${FILE_PATH}/sb"; ARGO_FILE="${FILE_PATH}/cloudflared"
+    if [[ "$ARCH" == "aarch64" ]] || [[ "$ARCH" == "arm64" ]]; then
+        SB_ARCH="arm64"
+        ARGO_ARCH="arm64"
+    else
+        SB_ARCH="amd64"
+        ARGO_ARCH="amd64"
+    fi
 
-    download_file() { if [ ! -x "$2" ]; then curl -L -sS --max-time 60 -o "$2" "$1" && chmod +x "$2"; fi; }
-    download_file "${BASE_URL}/sb" "$SB_FILE"
+    SB_FILE="${FILE_PATH}/sb"
+    ARGO_FILE="${FILE_PATH}/cloudflared"
+
+    download_file() {
+        if [ ! -x "$2" ]; then
+            curl -L -sS --max-time 60 -o "$2" "$1" && chmod +x "$2"
+        fi
+    }
+
+    download_singbox() {
+        # 已存在就不重复下
+        [ -x "$SB_FILE" ] && return 0
+
+        # 通过 releases/latest 重定向拿到最新版本号（例如 1.12.22）
+        latest_url=$(curl -Ls -o /dev/null -w "%{url_effective}" "https://github.com/SagerNet/sing-box/releases/latest")
+        ver="${latest_url##*/v}"
+
+        tgz="${FILE_PATH}/sing-box.tgz"
+        dir="${FILE_PATH}/sing-box-${ver}-linux-${SB_ARCH}"
+
+        curl -L -sS --max-time 180 -o "$tgz"           "https://github.com/SagerNet/sing-box/releases/download/v${ver}/sing-box-${ver}-linux-${SB_ARCH}.tar.gz" || return 1
+
+        tar -xzf "$tgz" -C "$FILE_PATH" || return 1
+
+        mv "${dir}/sing-box" "$SB_FILE" || return 1
+        chmod +x "$SB_FILE"
+
+        # 可选：若解压包里带 libcronet.so，就放到同目录，避免某些功能缺库
+        if [ -f "${dir}/libcronet.so" ]; then
+            mv "${dir}/libcronet.so" "${FILE_PATH}/libcronet.so"
+        fi
+
+        rm -f "$tgz"
+        return 0
+    }
+
+    download_singbox || { log "[错误] sing-box 下载/解压失败"; sleep 5; continue; }
+
+    # cloudflared 仍用官方 latest
     download_file "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARGO_ARCH}" "$ARGO_FILE"
 
     # 证书
